@@ -10,7 +10,8 @@ def generate_vocaloid_midi(
     rhythm: str = "quarter", 
     rhythm_mode: str = "fixed",
     mode: str = "single", 
-    seed: int = 42
+    seed: int = 42,
+    beats_per_bar: int = 4
 ):
     """
     Converts lyrics into a MIDI file mapped for OpenUtau.
@@ -22,6 +23,7 @@ def generate_vocaloid_midi(
     :param rhythm_mode: Rhythm mapping mode ('fixed' or 'natural').
     :param mode: 'single', 'similar_words', or 'seeded_random'.
     :param seed: Seed for the random generator (used in 'seeded_random' pitch mode or 'natural' rhythm mode).
+    :param beats_per_bar: Number of beats per musical bar (default is 4 for 4/4 time).
     """
     
     # Standard MIDI resolution (Ticks Per Quarter Note)
@@ -58,14 +60,18 @@ def generate_vocaloid_midi(
     # Split the lyrics into bars (lines)
     bars = lyrics.strip().split('\n')
 
-    # Initialize timing offset for rests
+    # Initialize timing offset for rests and bar alignment
     next_note_delay = 0
+    total_ticks = 0
+    bar_ticks = ppq * beats_per_bar
 
     for bar in bars:
         # Split each bar by spaces to isolate individual words/syllables
         words = bar.strip().split()
         if not words:
             continue
+
+        bar_has_notes = False
 
         for word in words:
             # --- 1. Determine the Note based on the selected Mode ---
@@ -125,13 +131,32 @@ def generate_vocaloid_midi(
                 # Note Off ends after note_duration
                 track.append(mido.Message('note_off', note=note, velocity=100, time=note_duration))
                 
+                # Update absolute tick time
+                total_ticks += next_note_delay + note_duration
+                
                 # The next note starts after the rest ticks (if any)
                 next_note_delay = rest_ticks
             else:
                 # Fixed mode
-                track.append(mido.MetaMessage('lyrics', text=word, time=0))
+                track.append(mido.MetaMessage('lyrics', text=word, time=next_note_delay))
                 track.append(mido.Message('note_on', note=note, velocity=100, time=0))
                 track.append(mido.Message('note_off', note=note, velocity=100, time=ticks))
+                
+                # Update absolute tick time
+                total_ticks += next_note_delay + ticks
+                
+                # Reset next_note_delay for subsequent words in fixed mode
+                next_note_delay = 0
+
+            bar_has_notes = True
+
+        # --- 3. Align to Next Bar Boundary ---
+        if bar_has_notes:
+            bar_end_ticks = total_ticks + next_note_delay
+            next_bar_ticks = ((bar_end_ticks + bar_ticks - 1) // bar_ticks) * bar_ticks
+            padding = next_bar_ticks - bar_end_ticks
+            next_note_delay += padding
+            total_ticks = next_bar_ticks - next_note_delay
 
     # Save out the generated sequence
     mid.save(output_file)
@@ -143,8 +168,7 @@ def generate_vocaloid_midi(
 sample_lyrics = """
 You're the kind of girl,
 that fits in with my world.  
-I'll give you- anything, everything
-if you want things.
+I'll give you- anything, everything if you want things.
 """
 
 print("Generating Single Note MIDI...")
@@ -183,4 +207,14 @@ generate_vocaloid_midi(
     rhythm_mode="natural", 
     mode="similar_words",
     seed=102
+)
+
+print("Generating Natural Rhythm MIDI...")
+generate_vocaloid_midi(
+    lyrics=sample_lyrics, 
+    output_file="04_natural_rhythm_2.mid", 
+    tempo=120, 
+    rhythm_mode="natural", 
+    mode="seeded_random",
+    seed=10
 )
