@@ -21,6 +21,9 @@ import os
 import re
 import struct
 import math
+from pathlib import Path
+import shutil
+
 
 # Default session path (modify as needed for interactive runs)
 PRJ_PATH = "/Users/alex/Music/ZOOM_L6Max/260719_141521/L6MAXPRJDATA.prj"
@@ -28,8 +31,8 @@ PRJ_PATH = "/Users/alex/Music/ZOOM_L6Max/260719_141521/L6MAXPRJDATA.prj"
 # ---------------------------------------------------------------------------
 # Audio silence-detection thresholds
 # ---------------------------------------------------------------------------
-SILENCE_PEAK_DB   = -60.0   # if peak below this  -> candidate for silence
-NOISE_FLOOR_DB    = -60.0   # per-sample threshold for "above noise floor"
+SILENCE_PEAK_DB   = -48.0   # if peak below this  -> candidate for silence
+NOISE_FLOOR_DB    = -48.0   # per-sample threshold for "above noise floor"
 NOISE_PCT_MAX     = 0.5     # if < this % of samples exceed noise floor -> empty
 
 # ---------------------------------------------------------------------------
@@ -159,12 +162,24 @@ def probe_wav(wav_path):
             n_frames  = data_chunk_size // bytes_per_frame if bytes_per_frame else 0
             duration  = n_frames / sr if sr > 0 else 0
 
-            # ---- Read 2: audio probe ----
-            f.seek(audio_offset)
-            probe_buf = f.read(AUDIO_PROBE_BYTES)
+            # ---- Read 2: multi-spot audio probe ----
+            num_probes = 5
+            max_offset = max(audio_offset, audio_offset + data_chunk_size - AUDIO_PROBE_BYTES)
+            
+            probe_offsets = []
+            if max_offset > audio_offset:
+                step = (max_offset - audio_offset) // (num_probes - 1)
+                probe_offsets = [audio_offset + i * step for i in range(num_probes)]
+            else:
+                probe_offsets = [audio_offset]
 
-        # Analyse the probe buffer
-        bytes_per_sample = bits // 8
+            probe_bufs = []
+            for offset in probe_offsets:
+                f.seek(offset)
+                probe_bufs.append(f.read(AUDIO_PROBE_BYTES))
+
+        # Analyse the probe buffers
+        bytes_per_sample = max(1, bits // 8)
         fmt_char = "f" if (bits == 32 and audio_fmt == 3) else ("h" if bits == 16 else "i")
         scale    = 1.0
         if bits == 16:
@@ -172,32 +187,48 @@ def probe_wav(wav_path):
         elif bits == 32 and audio_fmt == 1:   # int32 PCM
             scale = 1.0 / 2147483648.0
 
-        max_val         = 0.0
-        rms_sum         = 0.0
-        count           = 0
-        above_noise     = 0
-        noise_threshold = 10 ** (NOISE_FLOOR_DB / 20.0)
+        max_peak_db = -999.0
+        max_pct = 0.0
+        any_active = False
 
-        pos = 0
-        while pos + bytes_per_sample <= len(probe_buf):
-            s = abs(struct.unpack(f"<{fmt_char}", probe_buf[pos : pos + bytes_per_sample])[0]) * scale
-            if s > max_val:
-                max_val = s
-            rms_sum += s * s
-            count   += 1
-            if s > noise_threshold:
-                above_noise += 1
-            pos += bytes_per_sample
+        for probe_buf in probe_bufs:
+            if not probe_buf:
+                continue
+                
+            max_val         = 0.0
+            rms_sum         = 0.0
+            count           = 0
+            above_noise     = 0
+            noise_threshold = 10 ** (NOISE_FLOOR_DB / 20.0)
 
-        if count == 0:
-            peak_db = -999.0
-            pct     = 0.0
-        else:
-            rms     = math.sqrt(rms_sum / count)
-            peak_db = 20 * math.log10(max_val) if max_val > 1e-12 else -999.0
-            pct     = above_noise / count * 100.0
+            pos = 0
+            while pos + bytes_per_sample <= len(probe_buf):
+                s = abs(struct.unpack(f"<{fmt_char}", probe_buf[pos : pos + bytes_per_sample])[0]) * scale
+                if s > max_val:
+                    max_val = s
+                rms_sum += s * s
+                count   += 1
+                if s > noise_threshold:
+                    above_noise += 1
+                pos += bytes_per_sample
 
-        is_empty = (peak_db < SILENCE_PEAK_DB) or (pct < NOISE_PCT_MAX)
+            if count == 0:
+                peak_db = -999.0
+                pct     = 0.0
+            else:
+                peak_db = 20 * math.log10(max_val) if max_val > 1e-12 else -999.0
+                pct     = above_noise / count * 100.0
+
+            if peak_db > max_peak_db:
+                max_peak_db = peak_db
+            if pct > max_pct:
+                max_pct = pct
+
+            spot_empty = (peak_db < SILENCE_PEAK_DB) or (pct < NOISE_PCT_MAX)
+            if not spot_empty:
+                any_active = True
+
+        is_empty = not any_active
 
         return dict(
             file_bytes      = file_bytes,
@@ -205,8 +236,8 @@ def probe_wav(wav_path):
             sample_rate     = sr,
             bits            = bits,
             duration_s      = duration,
-            peak_db         = peak_db,
-            pct_above_noise = pct,
+            peak_db         = max_peak_db,
+            pct_above_noise = max_pct,
             is_empty        = is_empty,
         )
 
@@ -327,10 +358,7 @@ def print_report(prj_path):
 
 
 #%% Execution
-from pathlib import Path
-import shutil
-
-path_to_audio = "/Users/alex/Music/ZOOM_L6Max/260719_141521/L6MAXPRJDATA.prj"
+path_to_audio = "/Volumes/L6max/RECORDER"
 destination_folder = "/Users/alex/Music/ZOOM_L6Max"
 
 source_path = Path(path_to_audio)
