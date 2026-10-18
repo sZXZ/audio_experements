@@ -22,8 +22,9 @@ def generate_vocaloid_midi(
     :param rhythm: Note duration ('whole', 'half', 'quarter', 'eighth', 'sixteenth') used in fixed mode.
     :param rhythm_mode: Rhythm mapping mode ('fixed' or 'natural').
     :param mode: 'single', 'similar_words', 'seeded_random',
-                 'fifth_up' (alternates C4 G4), or 'fifth_down' (alternates C4 G3).
-                 In the fifth modes, use '+' signs in the lyrics instead of words,
+                 'fifth_up' (alternates C4 G4), 'fifth_down' (alternates C4 G3),
+                 'third_up' (alternates A3 C4), or 'third_down' (alternates C4 A3).
+                 In the interval modes, use '+' signs in the lyrics instead of words,
                  e.g. one '+' per note: "+ + + +".
     :param seed: Seed for the random generator (used in 'seeded_random' pitch mode or 'natural' rhythm mode).
     :param beats_per_bar: Number of beats per musical bar (default is 4 for 4/4 time).
@@ -68,11 +69,19 @@ def generate_vocaloid_midi(
     total_ticks = 0
     bar_ticks = ppq * beats_per_bar
 
-    # Fifth-mode state: alternates the root with the fifth above/below.
-    # 'fifth_up'   -> C4 (60) G4 (67) : a perfect fifth up (+7 semitones)
-    # 'fifth_down' -> C4 (60) G3 (55) : the G below C (-5 semitones)
-    fifth_interval = 7 if mode == "fifth_up" else -5
-    fifth_toggle = False
+    # Interval-mode state: alternate between a start note and a second note.
+    # 'fifth_up':   C4 (60) G4 (67), starting on C4 going up
+    # 'fifth_down': C4 (60) G3 (55), starting on C4 going down
+    # 'third_up':   A3 (57) C4 (60), starting on A3 going up
+    # 'third_down': C4 (60) A3 (57), starting on C4 going down
+    interval_patterns = {
+        "fifth_up":   (60, 67),
+        "fifth_down": (60, 55),
+        "third_up":   (57, 60),
+        "third_down": (60, 57),
+    }
+    interval_start, interval_alt = interval_patterns.get(mode, (base_note, base_note))
+    interval_toggle = False
 
     for bar in bars:
         # Split each bar by spaces to isolate individual words/syllables
@@ -98,12 +107,14 @@ def generate_vocaloid_midi(
                 # Pure randomized note within the octave
                 note = base_note + random.randint(0, range_notes - 1)
 
-            elif mode in ("fifth_up", "fifth_down"):
-                # Alternate between the root (C4) and G:
+            elif mode in interval_patterns:
+                # Alternate between the two notes of the interval:
                 # 'fifth_up':   C4 -> G4 -> C4 -> G4 ...
                 # 'fifth_down': C4 -> G3 -> C4 -> G3 ...
-                note = base_note + (fifth_interval if fifth_toggle else 0)
-                fifth_toggle = not fifth_toggle
+                # 'third_up':   A3 -> C4 -> A3 -> C4 ...
+                # 'third_down': C4 -> A3 -> C4 -> A3 ...
+                note = interval_alt if interval_toggle else interval_start
+                interval_toggle = not interval_toggle
                 # '+' signs are placeholders for notes, so don't sing them as lyrics
                 word = word.rstrip('+') or "+"
 
@@ -316,4 +327,22 @@ generate_vocaloid_midi(
     tempo=120,
     rhythm="quarter",
     mode="fifth_down"
+)
+
+print("Generating Thirds Up (A3 C4) MIDI...")
+generate_vocaloid_midi(
+    lyrics=fifth_lyrics,
+    output_file="06_third_up.mid",
+    tempo=120,
+    rhythm="quarter",
+    mode="third_up"
+)
+
+print("Generating Thirds Down (C4 A3) MIDI...")
+generate_vocaloid_midi(
+    lyrics=fifth_lyrics,
+    output_file="06_third_down.mid",
+    tempo=120,
+    rhythm="quarter",
+    mode="third_down"
 )
