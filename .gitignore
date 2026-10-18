@@ -1,2 +1,5 @@
 *.mid
 *.pyc
+*.code-workspace
+*.csv
+.DS_Store
