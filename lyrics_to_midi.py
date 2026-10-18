@@ -292,7 +292,7 @@ fifth_lyrics = """
  Coffin +
  Cobweb +
  Costume +
- Mask +
+ Mask -
  Candy +
  Knife +
  Axe +
