@@ -21,7 +21,10 @@ def generate_vocaloid_midi(
     :param tempo: Tempo in BPM.
     :param rhythm: Note duration ('whole', 'half', 'quarter', 'eighth', 'sixteenth') used in fixed mode.
     :param rhythm_mode: Rhythm mapping mode ('fixed' or 'natural').
-    :param mode: 'single', 'similar_words', or 'seeded_random'.
+    :param mode: 'single', 'similar_words', 'seeded_random',
+                 'fifth_up' (alternates C4 G4), or 'fifth_down' (alternates C4 G3).
+                 In the fifth modes, use '+' signs in the lyrics instead of words,
+                 e.g. one '+' per note: "+ + + +".
     :param seed: Seed for the random generator (used in 'seeded_random' pitch mode or 'natural' rhythm mode).
     :param beats_per_bar: Number of beats per musical bar (default is 4 for 4/4 time).
     """
@@ -65,6 +68,12 @@ def generate_vocaloid_midi(
     total_ticks = 0
     bar_ticks = ppq * beats_per_bar
 
+    # Fifth-mode state: alternates the root with the fifth above/below.
+    # 'fifth_up'   -> C4 (60) G4 (67) : a perfect fifth up (+7 semitones)
+    # 'fifth_down' -> C4 (60) G3 (55) : the G below C (-5 semitones)
+    fifth_interval = 7 if mode == "fifth_up" else -5
+    fifth_toggle = False
+
     for bar in bars:
         # Split each bar by spaces to isolate individual words/syllables
         words = bar.strip().split()
@@ -88,7 +97,16 @@ def generate_vocaloid_midi(
             elif mode == "seeded_random":
                 # Pure randomized note within the octave
                 note = base_note + random.randint(0, range_notes - 1)
-                
+
+            elif mode in ("fifth_up", "fifth_down"):
+                # Alternate between the root (C4) and G:
+                # 'fifth_up':   C4 -> G4 -> C4 -> G4 ...
+                # 'fifth_down': C4 -> G3 -> C4 -> G3 ...
+                note = base_note + (fifth_interval if fifth_toggle else 0)
+                fifth_toggle = not fifth_toggle
+                # '+' signs are placeholders for notes, so don't sing them as lyrics
+                word = word.rstrip('+') or "+"
+
             else:
                 note = base_note
 
@@ -243,8 +261,7 @@ generate_vocaloid_midi(
     tempo=120, 
     rhythm_mode="natural", 
     mode="single",
-    seed=0,
-    note_range=0
+    seed=0
 )
 
 print("Generating Natural Rhythm MIDI...")
@@ -265,4 +282,38 @@ generate_vocaloid_midi(
     rhythm_mode="natural", 
     mode="seeded_random",
     seed=10
+)
+
+# %% 
+# Fifth-mode variation: alternate C4 <-> G4 (or C4 <-> G3).
+# Each '+' is a note placeholder instead of a word; the '+' becomes the lyric text.
+fifth_lyrics = """
+  Skull -
+ Coffin +
+ Cobweb +
+ Costume +
+ Mask +
+ Candy +
+ Knife +
+ Axe +
+ Scary +
+ Creepy +
+"""
+
+print("Generating Fifths Up (C4 G4) MIDI...")
+generate_vocaloid_midi(
+    lyrics=fifth_lyrics,
+    output_file="05_fifth_up.mid",
+    tempo=120,
+    rhythm="quarter",
+    mode="fifth_up"
+)
+
+print("Generating Fifths Down (C4 G3) MIDI...")
+generate_vocaloid_midi(
+    lyrics=fifth_lyrics,
+    output_file="05_fifth_down.mid",
+    tempo=120,
+    rhythm="quarter",
+    mode="fifth_down"
 )
