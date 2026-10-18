@@ -55,7 +55,7 @@ def generate_vocaloid_midi(
 
     # Vocal Range settings (C4 = 60 to B4 = 71)
     base_note = 60
-    range_notes = 12 
+    range_notes = 12
 
     # Split the lyrics into bars (lines)
     bars = lyrics.strip().split('\n')
@@ -224,16 +224,35 @@ generate_vocaloid_midi(
 # Example lyrics (English, Romaji, and Hiragana)
 # Each new line represents a new bar. Each space represents a new note.
 sample_lyrics = """
-I'd give it to you if I could
-but I borrowed it
+  Skull
+ Coffin
+ Cobweb
+ Costume
+ Mask
+ Candy
+ Knife
+ Axe
+ Scary
+ Creepy
 """
+
+print("Generating Natural Rhythm MIDI...")
+generate_vocaloid_midi(
+    lyrics=sample_lyrics, 
+    output_file="04_single.mid", 
+    tempo=120, 
+    rhythm_mode="natural", 
+    mode="single",
+    seed=0,
+    note_range=0
+)
 
 print("Generating Natural Rhythm MIDI...")
 generate_vocaloid_midi(
     lyrics=sample_lyrics, 
     output_file="04_natural_rhythm.mid", 
     tempo=120, 
-    rhythm_mode="single", 
+    rhythm_mode="natural", 
     mode="similar_words",
     seed=102
 )
