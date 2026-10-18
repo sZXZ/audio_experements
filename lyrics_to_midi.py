@@ -218,3 +218,32 @@ generate_vocaloid_midi(
     mode="seeded_random",
     seed=10
 )
+
+
+# %% 
+# Example lyrics (English, Romaji, and Hiragana)
+# Each new line represents a new bar. Each space represents a new note.
+sample_lyrics = """
+I'd give it to you if I could
+but I borrowed it
+"""
+
+print("Generating Natural Rhythm MIDI...")
+generate_vocaloid_midi(
+    lyrics=sample_lyrics, 
+    output_file="04_natural_rhythm.mid", 
+    tempo=120, 
+    rhythm_mode="single", 
+    mode="similar_words",
+    seed=102
+)
+
+print("Generating Natural Rhythm MIDI...")
+generate_vocaloid_midi(
+    lyrics=sample_lyrics, 
+    output_file="04_natural_rhythm_2.mid", 
+    tempo=120, 
+    rhythm_mode="natural", 
+    mode="seeded_random",
+    seed=10
+)
