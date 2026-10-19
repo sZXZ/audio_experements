@@ -30,19 +30,27 @@ def count_syllables(word: str) -> int:
 
 def split_word_by_syllables(word: str, placeholder: str = "+") -> list[str]:
     """
-    Split a word by syllables: put the whole word first, then add placeholder
-    tokens for each additional syllable, placing trailing punctuation on the
-    last token. One token per syllable.
+    Split a word into one token per syllable.
+
+    The whole (singable) word always comes first, followed by placeholder
+    tokens ('+' or '-') for each extra syllable, since a placeholder alone is
+    not something we can sing. Trailing punctuation (., -) is kept only on the
+    very last token so it still marks a rest in natural rhythm mode.
+
+    Examples (placeholder '+'):
+        'rings'      (1 syllable) -> ['rings']
+        'Costume,'   (2 syllables) -> ['Costume', '+,']  (or ['Costume', '+,']
+        'everything' (4 syllables) -> ['everything', '+', '+', '+']
     """
-    core = word.rstrip('.,-')
-    trailing = word[len(core):]
     syll = count_syllables(word)
     if syll <= 1:
         return [word]
+    core = word.rstrip('.,-')
+    trailing = word[len(core):]
     tokens = [core] + [placeholder] * (syll - 1)
-    tokens[-1] += trailing
+    if trailing:
+        tokens[-1] += trailing
     return tokens
-
 def split_word_into_notes(word: str, max_length: int = 4, placeholder: str = "+"):
     """
     Character-based splitting (backward compatible).
@@ -202,16 +210,19 @@ def generate_vocaloid_midi(
             if rhythm_mode == "natural":
                 clean_word = word
                 rest_ticks = 0
-                # When '-' is the chosen placeholder it marks a note, not a rest,
-                # so only '.' and ',' can create rests in that case.
-                rest_chars = '.,' if placeholder == '-' else '.,-'
-                if word and word[-1] in rest_chars:
+
+                # A placeholder token ('+' or '-') is a note we intend to sing,
+                # so it must never be swallowed as a rest.
+                is_placeholder_token = bool(word) and word[0] == placeholder and all(
+                    c == placeholder or c in '.,-' for c in word
+                )
+                if not is_placeholder_token and word and word[-1] in '.,-':
                     last_char = word[-1]
                     if last_char == '.':
                         rest_ticks = ppq
                     else:
                         rest_ticks = ppq // 2
-                    clean_word = word.rstrip(rest_chars)
+                    clean_word = word.rstrip('.,-')
                 
                 # If the word was entirely punctuation, accumulate the rest duration and skip note creation
                 if not clean_word:
@@ -273,7 +284,9 @@ def generate_vocaloid_midi(
 # Example lyrics (English, Romaji, and Hiragana)
 # Each new line represents a new bar. Each space represents a new note.
 sample_lyrics = """
-
+You're the kind of girl,
+that fits in with my world.  
+I'll give you- anything, everything if you want things.
 """
 
 print("Generating Single Note MIDI...")
@@ -329,7 +342,18 @@ generate_vocaloid_midi(
 # Example lyrics (English, Romaji, and Hiragana)
 # Each new line represents a new bar. Each space represents a new note.
 sample_lyrics = """
+I am a teto 
+without 
+ba ge to
 
+riding + a bus waiting for stuff
+how to be nice  
+hot to stay nice 
+se me in error +
+forever
+
+ba ge to ba ge to ba ge to - 
+ba ge to ba ge to ba ge to - 
 """
 
 print("Generating Natural Rhythm MIDI...")
@@ -415,33 +439,35 @@ generate_vocaloid_midi(
 )
 
 # %% 
-# Auto-split: words longer than 'split_length' characters become 2 or more
-# placeholder notes ('+' or '-', set with the 'placeholder' parameter).
-# e.g. with split_length=4: 'Costume' -> '+ +', 'everything' -> '+ + +'
+# Auto-split by syllables: the whole word always keeps its own note (so it is
+# singable) and each extra syllable becomes a '+' or '-' placeholder note.
+# 'rings' (1 syllable) stays 'rings'; 'everything' (4 syllables) -> 'everything + + +'
+# Trailing punctuation (., -) is kept only on the last token.
 split_lyrics = """
-
+I've got a bike, you can ride it if you like
+It's got a basket, a bell that rings
+And things to make it look good
+I'd give it to you if I could, but I borrowed it
 """
 
-print("Generating Auto-Split Long Words MIDI...")
+print("Generating Syllable-Split MIDI (fifths up)...")
 generate_vocaloid_midi(
     lyrics=split_lyrics,
-    output_file="07_split_long_words.mid",
+    output_file="07_split_syllables.mid",
     tempo=120,
     rhythm="quarter",
     mode="fifth_up",
-    split_long_words=True,
-    split_length=4,
+    split_by_syllables=True,
     placeholder="+"
 )
 
-print("Generating Auto-Split ('-' placeholder, natural rhythm) MIDI...")
+print("Generating Syllable-Split MIDI ('-' placeholder, natural rhythm)...")
 generate_vocaloid_midi(
     lyrics=split_lyrics,
-    output_file="08_split_long_words_minus.mid",
+    output_file="08_split_syllables_minus.mid",
     tempo=80,
     rhythm_mode="natural",
     mode="third_down",
-    split_long_words=True,
-    split_length=4,
+    split_by_syllables=True,
     placeholder="-"
 )
