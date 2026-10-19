@@ -2,6 +2,10 @@
 import mido
 import random
 import hashlib
+import os
+import re
+import tempfile
+from pathlib import Path
 
 def count_syllables(word: str) -> int:
     """
@@ -97,7 +101,7 @@ def generate_vocaloid_midi(
     :param split_long_words: If True, words longer than 'split_length' characters are
                              automatically split into 2 or more placeholder notes.
     :param split_length: Target max characters per note when splitting
-                         (e.g. 4 -> 'everything' becomes '+ + +').
+                         (e.g. 4 -> 'everything' becomes 'everything + +').
     :param placeholder: The sign used for split/interval note tokens: '+' or '-'.
                          Note: in natural rhythm mode a lone '-' is a rest, so if you
                          choose '-' as the placeholder, use '.' or ',' for rests instead.
@@ -471,3 +475,184 @@ generate_vocaloid_midi(
     split_by_syllables=True,
     placeholder="-"
 )
+
+# %% 
+# --- Obsidian song processing ------------------------------------------------
+# Every .md file in the Songs folder describes exactly one MIDI file.
+# '#' tag lines (e.g. #tempo-120, #rythm-natural, #mode-similar_words,
+# #seed-102, #split_by_syllables) configure generate_vocaloid_midi() and are
+# removed from the lyrics. A tag block in the middle of the lyrics starts a
+# new section with the updated settings (earlier settings carry over); all
+# sections are merged into a single .mid file written next to the .md file.
+
+SONG_TAG_RE = re.compile(r'^#([A-Za-z_][A-Za-z0-9_]*)(?:-(.*))?$')
+
+SONG_DEFAULT_SETTINGS = {
+    "tempo": 120,
+    "rhythm": "quarter",
+    "rhythm_mode": "fixed",
+    "mode": "single",
+    "seed": 42,
+    "beats_per_bar": 4,
+    "split_long_words": False,
+    "split_length": 4,
+    "placeholder": "+",
+    "split_by_syllables": False,
+}
+
+_SONG_RHYTHMS = ("whole", "half", "quarter", "eighth", "sixteenth")
+_SONG_RHYTHM_MODES = ("fixed", "natural")
+_SONG_MODES = (
+    "single", "similar_words", "seeded_random",
+    "fifth_up", "fifth_down", "third_up", "third_down",
+)
+_SONG_INT_SETTINGS = ("tempo", "seed", "beats_per_bar", "split_length")
+_SONG_BOOL_SETTINGS = ("split_long_words", "split_by_syllables")
+
+
+def _apply_song_tag(settings: dict, key: str, value: str = None) -> None:
+    """
+    Apply one '#tag' (or '#tag-value') to the settings dict in place.
+    """
+    key = {"rythm": "rhythm"}.get(key, key)  # accept the common typo
+
+    if key not in SONG_DEFAULT_SETTINGS:
+        print(f"  Unknown tag '#{key}' - ignored.")
+        return
+
+    # Bare flags like '#split_by_syllables' turn a boolean setting on.
+    if key in _SONG_BOOL_SETTINGS:
+        if value is None:
+            settings[key] = True
+        else:
+            settings[key] = value.strip().lower() not in ("false", "no", "0")
+        return
+
+    if value is None:
+        print(f"  Tag '#{key}' is missing a value - ignored.")
+        return
+    value = value.strip()
+
+    if key in _SONG_INT_SETTINGS:
+        try:
+            settings[key] = int(value)
+        except ValueError:
+            print(f"  Tag '#{key}-{value}' is not a number - ignored.")
+        return
+
+    # '#rythm-natural' / '#rythm-fixed' set rhythm_mode, e.g. '#rythm-quarter'
+    # (whole/half/quarter/eighth/sixteenth) sets the fixed-note rhythm.
+    if key == "rhythm" and value in _SONG_RHYTHM_MODES:
+        settings["rhythm_mode"] = value
+        return
+    if key == "rhythm" and value not in _SONG_RHYTHMS:
+        print(f"  Unknown rhythm '{value}' - ignored.")
+        return
+    if key == "rhythm_mode" and value not in _SONG_RHYTHM_MODES:
+        print(f"  Unknown rhythm_mode '{value}' - ignored.")
+        return
+    if key == "mode" and value not in _SONG_MODES:
+        print(f"  Unknown mode '{value}' - ignored.")
+        return
+
+    settings[key] = value
+
+
+def _parse_song_sections(text: str) -> list:
+    """
+    Split md text into a list of (lyric_lines, settings) sections.
+
+    Tag lines are stripped from the lyrics. Settings accumulate, so a tag
+    block only affects the lyrics that follow it.
+    """
+    settings = dict(SONG_DEFAULT_SETTINGS)
+    sections = []
+    current_lines = []
+
+    for line in text.splitlines():
+        match = SONG_TAG_RE.match(line.strip())
+        if match:
+            if any(l.strip() for l in current_lines):
+                sections.append((current_lines, dict(settings)))
+                current_lines = []
+            _apply_song_tag(settings, match.group(1), match.group(2))
+        else:
+            current_lines.append(line)
+
+    if any(l.strip() for l in current_lines):
+        sections.append((current_lines, dict(settings)))
+
+    return sections
+
+
+def _generate_song_midi(sections: list, output_file: Path) -> None:
+    """
+    Generate the sections and merge them into a single midi file.
+    A single-section song is generated directly (no merging needed).
+    """
+    if len(sections) == 1:
+        lines, settings = sections[0]
+        generate_vocaloid_midi(
+            lyrics="\n".join(lines),
+            output_file=str(output_file),
+            **settings,
+        )
+        return
+
+    ppq = 480
+    merged = mido.MidiFile(ticks_per_beat=ppq)
+    merged_track = mido.MidiTrack()
+    merged.tracks.append(merged_track)
+
+    for index, (lines, settings) in enumerate(sections):
+        # Pad the junction to the next bar boundary of the upcoming section's
+        # grid, so its internal bar alignment stays valid in the merged file.
+        pad = 0
+        if index > 0:
+            bar_ticks = ppq * settings["beats_per_bar"]
+            written = sum(msg.time for msg in merged_track)
+            pad = (bar_ticks - (written % bar_ticks)) % bar_ticks
+
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            generate_vocaloid_midi(
+                lyrics="\n".join(lines),
+                output_file=tmp_path,
+                **settings,
+            )
+            section = mido.MidiFile(tmp_path)
+        finally:
+            os.remove(tmp_path)
+
+        for i, msg in enumerate(section.tracks[0]):
+            if i == 0:  # the section's 'set_tempo' carries the junction pad
+                msg = msg.copy(time=msg.time + pad)
+            merged_track.append(msg)
+
+    merged.save(str(output_file))
+    print(f"Success! MIDI saved to '{output_file}'.")
+
+
+def process_songs(path: str = "/Users/alex/Documents/Music/Songs") -> list:
+    """
+    Generate one .mid file per .md file found in 'path'.
+
+    Each song's '#' tags configure the generator; output is written next to
+    the .md file (same name, '.mid' extension), replacing existing files.
+    Returns the list of created midi file paths.
+    """
+    outputs = []
+    for md_file in sorted(Path(path).glob("*.md")):
+        print(f"Processing '{md_file.name}'...")
+        sections = _parse_song_sections(md_file.read_text(encoding="utf-8"))
+        if not sections:
+            print("  No lyrics found - skipped.")
+            continue
+        output_file = md_file.with_suffix(".mid")
+        _generate_song_midi(sections, output_file)
+        outputs.append(str(output_file))
+    return outputs
+
+
+process_songs()
