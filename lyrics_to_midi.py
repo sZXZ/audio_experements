@@ -3,6 +3,60 @@ import mido
 import random
 import hashlib
 
+def count_syllables(word: str) -> int:
+    """
+    A simple English syllable counter (heuristic).
+    Works for many common words; returns at least 1.
+    """
+    core = word.lower().rstrip('.,-')
+    import re
+    core = re.sub(r'[^a-z]', '', core)
+    if not core or len(core) <= 3:
+        return 1
+    vowels = 'aeiouy'
+    count = 0
+    prev_vowel = False
+    for c in core:
+        is_v = c in vowels
+        if is_v and not prev_vowel:
+            count += 1
+        prev_vowel = is_v
+    # Adjustments
+    if core.endswith('e') and count > 1:
+        count -= 1
+    if core.endswith('le') and len(core) > 2 and core[-3] not in vowels:
+        count += 1
+    return max(1, count)
+
+def split_word_by_syllables(word: str, placeholder: str = "+") -> list[str]:
+    """
+    Split a word by syllables: put the whole word first, then add placeholder
+    tokens for each additional syllable, placing trailing punctuation on the
+    last token. One token per syllable.
+    """
+    core = word.rstrip('.,-')
+    trailing = word[len(core):]
+    syll = count_syllables(word)
+    if syll <= 1:
+        return [word]
+    tokens = [core] + [placeholder] * (syll - 1)
+    tokens[-1] += trailing
+    return tokens
+
+def split_word_into_notes(word: str, max_length: int = 4, placeholder: str = "+"):
+    """
+    Character-based splitting (backward compatible).
+    """
+    core = word.rstrip('.,-')
+    trailing = word[len(core):]
+    max_length = max(1, max_length)
+    if len(core) <= max_length:
+        return [word]
+    parts = max(2, -(-len(core) // max_length))
+    tokens = [placeholder] * parts
+    tokens[-1] += trailing
+    return tokens
+
 def generate_vocaloid_midi(
     lyrics: str, 
     output_file: str = "openutau_track.mid", 
@@ -11,7 +65,11 @@ def generate_vocaloid_midi(
     rhythm_mode: str = "fixed",
     mode: str = "single", 
     seed: int = 42,
-    beats_per_bar: int = 4
+    beats_per_bar: int = 4,
+    split_long_words: bool = False,
+    split_length: int = 4,
+    placeholder: str = "+",
+    split_by_syllables: bool = False,
 ):
     """
     Converts lyrics into a MIDI file mapped for OpenUtau.
@@ -28,6 +86,16 @@ def generate_vocaloid_midi(
                  e.g. one '+' per note: "+ + + +".
     :param seed: Seed for the random generator (used in 'seeded_random' pitch mode or 'natural' rhythm mode).
     :param beats_per_bar: Number of beats per musical bar (default is 4 for 4/4 time).
+    :param split_long_words: If True, words longer than 'split_length' characters are
+                             automatically split into 2 or more placeholder notes.
+    :param split_length: Target max characters per note when splitting
+                         (e.g. 4 -> 'everything' becomes '+ + +').
+    :param placeholder: The sign used for split/interval note tokens: '+' or '-'.
+                         Note: in natural rhythm mode a lone '-' is a rest, so if you
+                         choose '-' as the placeholder, use '.' or ',' for rests instead.
+    :param split_by_syllables: If True, split each word into one token per syllable
+                               with the whole word first followed by placeholder
+                               tokens (e.g. 'Costume' -> ['Costume', '+']).
     """
     
     # Standard MIDI resolution (Ticks Per Quarter Note)
@@ -89,6 +157,21 @@ def generate_vocaloid_midi(
         if not words:
             continue
 
+        # Optionally split long words into 2 or more placeholder notes,
+        # e.g. with split_length=4: "everything" -> '+ + +' (sung across 3 notes)
+        if split_by_syllables:
+            words = [
+                token
+                for word in words
+                for token in split_word_by_syllables(word, placeholder)
+            ]
+        elif split_long_words:
+            words = [
+                token
+                for word in words
+                for token in split_word_into_notes(word, split_length, placeholder)
+            ]
+
         bar_has_notes = False
 
         for word in words:
@@ -109,14 +192,8 @@ def generate_vocaloid_midi(
 
             elif mode in interval_patterns:
                 # Alternate between the two notes of the interval:
-                # 'fifth_up':   C4 -> G4 -> C4 -> G4 ...
-                # 'fifth_down': C4 -> G3 -> C4 -> G3 ...
-                # 'third_up':   A3 -> C4 -> A3 -> C4 ...
-                # 'third_down': C4 -> A3 -> C4 -> A3 ...
                 note = interval_alt if interval_toggle else interval_start
                 interval_toggle = not interval_toggle
-                # '+' signs are placeholders for notes, so don't sing them as lyrics
-                word = word.rstrip('+') or "+"
 
             else:
                 note = base_note
@@ -125,15 +202,16 @@ def generate_vocaloid_midi(
             if rhythm_mode == "natural":
                 clean_word = word
                 rest_ticks = 0
-                if word and word[-1] in ('.', ',', '-'):
+                # When '-' is the chosen placeholder it marks a note, not a rest,
+                # so only '.' and ',' can create rests in that case.
+                rest_chars = '.,' if placeholder == '-' else '.,-'
+                if word and word[-1] in rest_chars:
                     last_char = word[-1]
                     if last_char == '.':
                         rest_ticks = ppq
-                    elif last_char == ',':
+                    else:
                         rest_ticks = ppq // 2
-                    elif last_char == '-':
-                        rest_ticks = ppq // 2
-                    clean_word = word.rstrip('.,-')
+                    clean_word = word.rstrip(rest_chars)
                 
                 # If the word was entirely punctuation, accumulate the rest duration and skip note creation
                 if not clean_word:
@@ -195,9 +273,7 @@ def generate_vocaloid_midi(
 # Example lyrics (English, Romaji, and Hiragana)
 # Each new line represents a new bar. Each space represents a new note.
 sample_lyrics = """
-You're the kind of girl,
-that fits in with my world.  
-I'll give you- anything, everything if you want things.
+
 """
 
 print("Generating Single Note MIDI...")
@@ -253,16 +329,7 @@ generate_vocaloid_midi(
 # Example lyrics (English, Romaji, and Hiragana)
 # Each new line represents a new bar. Each space represents a new note.
 sample_lyrics = """
-  Skull
- Coffin
- Cobweb
- Costume
- Mask
- Candy
- Knife
- Axe
- Scary
- Creepy
+
 """
 
 print("Generating Natural Rhythm MIDI...")
@@ -345,4 +412,36 @@ generate_vocaloid_midi(
     tempo=120,
     rhythm="quarter",
     mode="third_down"
+)
+
+# %% 
+# Auto-split: words longer than 'split_length' characters become 2 or more
+# placeholder notes ('+' or '-', set with the 'placeholder' parameter).
+# e.g. with split_length=4: 'Costume' -> '+ +', 'everything' -> '+ + +'
+split_lyrics = """
+
+"""
+
+print("Generating Auto-Split Long Words MIDI...")
+generate_vocaloid_midi(
+    lyrics=split_lyrics,
+    output_file="07_split_long_words.mid",
+    tempo=120,
+    rhythm="quarter",
+    mode="fifth_up",
+    split_long_words=True,
+    split_length=4,
+    placeholder="+"
+)
+
+print("Generating Auto-Split ('-' placeholder, natural rhythm) MIDI...")
+generate_vocaloid_midi(
+    lyrics=split_lyrics,
+    output_file="08_split_long_words_minus.mid",
+    tempo=80,
+    rhythm_mode="natural",
+    mode="third_down",
+    split_long_words=True,
+    split_length=4,
+    placeholder="-"
 )
