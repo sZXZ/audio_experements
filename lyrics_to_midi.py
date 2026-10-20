@@ -69,6 +69,127 @@ def split_word_into_notes(word: str, max_length: int = 4, placeholder: str = "+"
     tokens[-1] += trailing
     return tokens
 
+# --- Chord vocabulary --------------------------------------------------------
+# Chord quality suffixes mapped to semitone offsets from the chord root.
+# The suffixes are listed with a 'C' root in the song tags (e.g. '#chord-C^7#11'
+# -> '^7#11'), but every chord works with any root: '#chord-Am' is 'm' on A.
+CHORD_INTERVALS = {
+    # Triads / power chords / basic sevenths
+    "":      (0, 4, 7),
+    "2":     (0, 2, 7),
+    "5":     (0, 7),
+    "6":     (0, 4, 7, 9),
+    "7":     (0, 4, 7, 10),
+    "9":     (0, 2, 4, 7, 10),
+    "11":    (0, 2, 4, 5, 7, 10),
+    "13":    (0, 2, 4, 7, 9, 10),
+    "69":    (0, 2, 4, 7, 9),
+    "add9":  (0, 2, 4, 7),
+    "o":     (0, 3, 6),
+    "h":     (0, 3, 6, 10),
+    "sus":   (0, 5, 7),
+    "^":     (0, 4, 7, 11),
+    "-":     (0, 3, 7),
+    "^7":    (0, 4, 7, 11),
+    "-7":    (0, 3, 7, 10),
+    "7sus":  (0, 5, 7, 10),
+    "h7":    (0, 3, 6, 10),
+    "o7":    (0, 3, 6, 9),
+    "^9":    (0, 2, 4, 7, 11),
+    "^13":   (0, 2, 4, 7, 9, 11),
+    # Major extensions / alterations
+    "^7#11": (0, 4, 6, 7, 11),
+    "^9#11": (0, 2, 4, 6, 7, 11),
+    "^7#5":  (0, 4, 8, 11),
+    # Minor extensions / alterations
+    "-6":     (0, 3, 7, 9),
+    "-69":    (0, 2, 3, 7, 9),
+    "-^7":    (0, 3, 7, 11),
+    "-^9":    (0, 2, 3, 7, 11),
+    "-9":     (0, 2, 3, 7, 10),
+    "-add9":  (0, 2, 3, 7),
+    "-11":    (0, 2, 3, 5, 7, 10),
+    "-7b5":   (0, 3, 6, 10),
+    "h9":     (0, 2, 3, 6, 10),
+    "-b6":    (0, 3, 7, 8),
+    "-#5":    (0, 3, 8),
+    # Dominant extensions / alterations
+    "7b9":      (0, 1, 4, 7, 10),
+    "7#9":      (0, 3, 4, 7, 10),
+    "7#11":     (0, 4, 6, 7, 10),
+    "7b5":      (0, 4, 6, 10),
+    "7#5":      (0, 4, 8, 10),
+    "9#11":     (0, 2, 4, 6, 7, 10),
+    "9b5":      (0, 2, 4, 6, 10),
+    "9#5":      (0, 2, 4, 8, 10),
+    "7b13":     (0, 4, 7, 8, 10),
+    "7#9#5":    (0, 3, 4, 8, 10),
+    "7#9b5":    (0, 3, 4, 6, 10),
+    "7#9#11":   (0, 3, 4, 6, 7, 10),
+    "7b9#11":   (0, 1, 4, 6, 7, 10),
+    "7b9b5":    (0, 1, 4, 6, 10),
+    "7b9#5":    (0, 1, 4, 8, 10),
+    "7b9#9":    (0, 1, 3, 4, 7, 10),
+    "7b9b13":   (0, 1, 4, 7, 8, 10),
+    "7alt":     (0, 1, 3, 4, 6, 8, 10),
+    "13#11":    (0, 2, 4, 6, 7, 9, 10),
+    "13b9":     (0, 1, 2, 4, 7, 9, 10),
+    "13#9":     (0, 2, 3, 4, 7, 9, 10),
+    "7b9sus":   (0, 1, 5, 7, 10),
+    "7susadd3": (0, 4, 5, 7, 10),
+    "9sus":     (0, 2, 5, 7, 10),
+    "13sus":    (0, 2, 5, 7, 9, 10),
+    "7b13sus":  (0, 5, 7, 8, 10),
+    "aug":      (0, 4, 8),
+    # Explicit major / minor spellings
+    "M":     (0, 4, 7),
+    "m":     (0, 3, 7),
+    "M7":    (0, 4, 7, 11),
+    "m7":    (0, 3, 7, 10),
+    "M9":    (0, 2, 4, 7, 11),
+    "M13":   (0, 2, 4, 7, 9, 11),
+    "M7#11": (0, 4, 6, 7, 11),
+    "M9#11": (0, 2, 4, 6, 7, 11),
+    "M7#5":  (0, 4, 8, 11),
+    "m6":    (0, 3, 7, 9),
+    "m69":   (0, 2, 3, 7, 9),
+    "m^7":   (0, 3, 7, 11),
+    "-M7":   (0, 3, 7, 11),
+    "m^9":   (0, 2, 3, 7, 11),
+    "-M9":   (0, 2, 3, 7, 11),
+    "m9":    (0, 2, 3, 7, 10),
+    "madd9": (0, 2, 3, 7),
+    "m11":   (0, 2, 3, 5, 7, 10),
+    "m7b5":  (0, 3, 6, 10),
+    "mb6":   (0, 3, 7, 8),
+    "m#5":   (0, 3, 8),
+}
+
+_NOTE_PITCH_CLASSES = {
+    "C": 0, "C#": 1, "Db": 1, "D": 2, "D#": 3, "Eb": 3, "E": 4,
+    "F": 5, "F#": 6, "Gb": 6, "G": 7, "G#": 8, "Ab": 8, "A": 9,
+    "A#": 10, "Bb": 10, "B": 11,
+}
+
+_CHORD_SYMBOL_RE = re.compile(r'^([A-G][#b]?)(.*)$')
+
+
+def _parse_chord(symbol):
+    """
+    Parse a chord symbol such as 'C', 'Am' or 'C^7#11'.
+
+    Returns (root_pitch_class, tuple_of_semitone_offsets) or None when the
+    root or the chord quality suffix is unknown.
+    """
+    match = _CHORD_SYMBOL_RE.match((symbol or "").strip())
+    if not match:
+        return None
+    root, suffix = match.group(1), match.group(2)
+    if root not in _NOTE_PITCH_CLASSES or suffix not in CHORD_INTERVALS:
+        return None
+    return _NOTE_PITCH_CLASSES[root], CHORD_INTERVALS[suffix]
+
+
 def generate_vocaloid_midi(
     lyrics: str, 
     output_file: str = "openutau_track.mid", 
@@ -82,6 +203,7 @@ def generate_vocaloid_midi(
     split_length: int = 4,
     placeholder: str = "+",
     split_by_syllables: bool = False,
+    chord: str = "C",
 ):
     """
     Converts lyrics into a MIDI file mapped for OpenUtau.
@@ -93,7 +215,8 @@ def generate_vocaloid_midi(
     :param rhythm_mode: Rhythm mapping mode ('fixed' or 'natural').
     :param mode: 'single', 'similar_words', 'seeded_random',
                  'fifth_up' (alternates C4 G4), 'fifth_down' (alternates C4 G3),
-                 'third_up' (alternates A3 C4), or 'third_down' (alternates C4 A3).
+                 'third_up' (alternates A3 C4), 'third_down' (alternates C4 A3),
+                 or 'arp' (arpeggiates the current chord, one chord tone per note).
                  In the interval modes, use '+' signs in the lyrics instead of words,
                  e.g. one '+' per note: "+ + + +".
     :param seed: Seed for the random generator (used in 'seeded_random' pitch mode or 'natural' rhythm mode).
@@ -108,6 +231,11 @@ def generate_vocaloid_midi(
     :param split_by_syllables: If True, split each word into one token per syllable
                                with the whole word first followed by placeholder
                                tokens (e.g. 'Costume' -> ['Costume', '+']).
+    :param chord: Chord symbol of this section (e.g. 'C', 'Am', 'C^7#11').
+                  Exactly one note per bar - the first one - is anchored to the
+                  chord root so every bar starts in key; all other notes follow
+                  the selected mode. Mode 'arp' cycles through the tones of this
+                  chord. Unknown or missing chords fall back to 'C'.
     """
     
     # Standard MIDI resolution (Ticks Per Quarter Note)
@@ -163,6 +291,76 @@ def generate_vocaloid_midi(
     interval_start, interval_alt = interval_patterns.get(mode, (base_note, base_note))
     interval_toggle = False
 
+    # --- Chord state --------------------------------------------------------
+    # The chord anchors exactly one note per bar - the first one - to the chord
+    # root, so every bar starts in key. Everything else is left to the mode.
+    # Mode 'arp' walks through the chord tones of this chord instead.
+    parsed_chord = _parse_chord(chord)
+    if parsed_chord is None:
+        print(f"  Unknown chord '{chord}' - using 'C'.")
+        parsed_chord = _parse_chord("C")
+    chord_root, chord_intervals = parsed_chord
+
+    # Chord root inside the vocal range: C4 (60) .. B4 (71).
+    chord_root_note = base_note + chord_root
+
+    # Arpeggio notes for mode 'arp': the chord tones of one octave starting on
+    # the root, folded back into the vocal range (60..71) when they go above it,
+    # so the sequence always starts on the root and stays singable.
+    arp_notes = []
+    for offset in chord_intervals:
+        arp_note = chord_root_note + offset
+        while arp_note > 71:
+            arp_note -= 12
+        arp_notes.append(arp_note)
+
+    # Per-bar pitch state (reset at the start of every bar below).
+    arp_index = 0
+    bar_first_note = True
+
+    def _pick_note(word: str) -> int:
+        """
+        Pick the pitch for the next note that is actually written.
+
+        The first note of a bar is forced onto the chord root ('in key');
+        every following note is chosen by the selected mode.
+        """
+        nonlocal interval_toggle, arp_index, bar_first_note
+
+        if mode == "single":
+            # Monotone pitch (C4)
+            note = base_note
+
+        elif mode == "similar_words":
+            # Hash the string so the same word always gets the exact same note
+            # e.g., every "la" gets D4, every "mi" gets E4
+            word_hash = int(hashlib.md5(word.encode('utf-8')).hexdigest(), 16)
+            note = base_note + (word_hash % range_notes)
+
+        elif mode == "seeded_random":
+            # Pure randomized note within the octave
+            note = base_note + random.randint(0, range_notes - 1)
+
+        elif mode == "arp":
+            # Cycle through the tones of the current chord, starting on the root
+            note = arp_notes[arp_index % len(arp_notes)]
+            arp_index += 1
+
+        elif mode in interval_patterns:
+            # Alternate between the two notes of the interval:
+            note = interval_alt if interval_toggle else interval_start
+            interval_toggle = not interval_toggle
+
+        else:
+            note = base_note
+
+        if bar_first_note:
+            # One note per bar (the first) is anchored to the chord root.
+            note = chord_root_note
+            bar_first_note = False
+
+        return note
+
     for bar in bars:
         # Split each bar by spaces to isolate individual words/syllables
         words = bar.strip().split()
@@ -185,32 +383,12 @@ def generate_vocaloid_midi(
             ]
 
         bar_has_notes = False
+        # A new bar restarts the chord anchor and the arpeggio on the root.
+        bar_first_note = True
+        arp_index = 0
 
         for word in words:
-            # --- 1. Determine the Note based on the selected Mode ---
-            if mode == "single":
-                # Monotone pitch (C4)
-                note = base_note
-                
-            elif mode == "similar_words":
-                # Hash the string so the same word always gets the exact same note
-                # e.g., every "la" gets D4, every "mi" gets E4
-                word_hash = int(hashlib.md5(word.encode('utf-8')).hexdigest(), 16)
-                note = base_note + (word_hash % range_notes)
-                
-            elif mode == "seeded_random":
-                # Pure randomized note within the octave
-                note = base_note + random.randint(0, range_notes - 1)
-
-            elif mode in interval_patterns:
-                # Alternate between the two notes of the interval:
-                note = interval_alt if interval_toggle else interval_start
-                interval_toggle = not interval_toggle
-
-            else:
-                note = base_note
-
-            # --- 2. Determine Rhythm and Punctuation (Rests) ---
+            # --- 1. Determine Rhythm and Punctuation (Rests) ---
             if rhythm_mode == "natural":
                 clean_word = word
                 rest_ticks = 0
@@ -247,6 +425,7 @@ def generate_vocaloid_midi(
                 note_duration = max(1, note_duration + random_offset)
                 
                 # Write events: Lyric and Note On start at next_note_delay
+                note = _pick_note(word)
                 track.append(mido.MetaMessage('lyrics', text=clean_word, time=next_note_delay))
                 track.append(mido.Message('note_on', note=note, velocity=100, time=0))
                 
@@ -260,6 +439,7 @@ def generate_vocaloid_midi(
                 next_note_delay = rest_ticks
             else:
                 # Fixed mode
+                note = _pick_note(word)
                 track.append(mido.MetaMessage('lyrics', text=word, time=next_note_delay))
                 track.append(mido.Message('note_on', note=note, velocity=100, time=0))
                 track.append(mido.Message('note_off', note=note, velocity=100, time=ticks))
@@ -272,7 +452,7 @@ def generate_vocaloid_midi(
 
             bar_has_notes = True
 
-        # --- 3. Align to Next Bar Boundary ---
+        # --- 2. Align to Next Bar Boundary ---
         if bar_has_notes:
             bar_end_ticks = total_ticks + next_note_delay
             next_bar_ticks = ((bar_end_ticks + bar_ticks - 1) // bar_ticks) * bar_ticks
@@ -288,8 +468,11 @@ def generate_vocaloid_midi(
 # --- Obsidian song processing ------------------------------------------------
 # Every .md file in the Songs folder describes exactly one MIDI file.
 # '#' tag lines (e.g. #tempo-120, #rythm-natural, #mode-similar_words,
-# #seed-102, #split_by_syllables) configure generate_vocaloid_midi() and are
-# removed from the lyrics. A tag block in the middle of the lyrics starts a
+# #mode-arp, #chord-C, #chord-Am, #seed-102, #split_by_syllables) configure
+# generate_vocaloid_midi() and are removed from the lyrics. '#chord-X' sets the
+# chord of the section: its root is the one note per bar that always stays in
+# key, and mode 'arp' arpeggiates its tones (default chord when the tag is
+# missing: C). A tag block in the middle of the lyrics starts a
 # new section with the updated settings (earlier settings carry over); all
 # sections are merged into a single .mid file written next to the .md file.
 
@@ -306,6 +489,7 @@ SONG_DEFAULT_SETTINGS = {
     "split_length": 4,
     "placeholder": "+",
     "split_by_syllables": False,
+    "chord": "C",
 }
 
 _SONG_RHYTHMS = ("whole", "half", "quarter", "eighth", "sixteenth")
@@ -313,6 +497,7 @@ _SONG_RHYTHM_MODES = ("fixed", "natural")
 _SONG_MODES = (
     "single", "similar_words", "seeded_random",
     "fifth_up", "fifth_down", "third_up", "third_down",
+    "arp",
 )
 _SONG_INT_SETTINGS = ("tempo", "seed", "beats_per_bar", "split_length")
 _SONG_BOOL_SETTINGS = ("split_long_words", "split_by_syllables")
@@ -346,6 +531,15 @@ def _apply_song_tag(settings: dict, key: str, value: str = None) -> None:
             settings[key] = int(value)
         except ValueError:
             print(f"  Tag '#{key}-{value}' is not a number - ignored.")
+        return
+
+    # '#chord-C', '#chord-Am', '#chord-C^7#11', ... select the chord of the
+    # section: it anchors the first note of every bar and feeds mode 'arp'.
+    if key == "chord":
+        if _parse_chord(value) is None:
+            print(f"  Unknown chord '{value}' - ignored.")
+            return
+        settings[key] = value
         return
 
     # '#rythm-natural' / '#rythm-fixed' set rhythm_mode, e.g. '#rythm-quarter'
