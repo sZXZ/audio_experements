@@ -477,6 +477,8 @@ def generate_vocaloid_midi(
 # sections are merged into a single .mid file written next to the .md file.
 
 SONG_TAG_RE = re.compile(r'^#([A-Za-z_][A-Za-z0-9_]*)(?:-(.*))?$')
+# A single line may hold several tags, e.g. '#tempo-160 #rythm-natural'.
+SONG_TAG_TOKEN_RE = re.compile(r'#[A-Za-z_][A-Za-z0-9_]*(?:-\S*)?')
 
 SONG_DEFAULT_SETTINGS = {
     "tempo": 120,
@@ -560,6 +562,22 @@ def _apply_song_tag(settings: dict, key: str, value: str = None) -> None:
     settings[key] = value
 
 
+def _split_song_tags(line: str) -> list:
+    """
+    Return the '#tag' / '#tag-value' tokens of a line.
+
+    A line counts as a tag block only when every whitespace-separated token is
+    a tag, so several tags can share one line ('#tempo-160 #rythm-natural').
+    Lines that also contain lyrics are returned as [] and kept verbatim.
+    """
+    tokens = line.split()
+    if not tokens:
+        return []
+    if not all(SONG_TAG_TOKEN_RE.fullmatch(token) for token in tokens):
+        return []
+    return tokens
+
+
 def _parse_song_sections(text: str) -> list:
     """
     Split md text into a list of (lyric_lines, settings) sections.
@@ -572,12 +590,14 @@ def _parse_song_sections(text: str) -> list:
     current_lines = []
 
     for line in text.splitlines():
-        match = SONG_TAG_RE.match(line.strip())
-        if match:
+        tags = _split_song_tags(line)
+        if tags:
             if any(l.strip() for l in current_lines):
                 sections.append((current_lines, dict(settings)))
                 current_lines = []
-            _apply_song_tag(settings, match.group(1), match.group(2))
+            for tag in tags:
+                match = SONG_TAG_RE.match(tag)
+                _apply_song_tag(settings, match.group(1), match.group(2))
         else:
             current_lines.append(line)
 
