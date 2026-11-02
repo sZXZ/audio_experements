@@ -69,6 +69,21 @@ def split_word_into_notes(word: str, max_length: int = 4, placeholder: str = "+"
     tokens[-1] += trailing
     return tokens
 
+
+def _scale_track_times(track, scale: float) -> None:
+    """
+    Scale every delta time on a track so the whole sequence is 'scale' times
+    as long. Absolute times are scaled and converted back to deltas, so
+    rounding cannot accumulate drift over a long song.
+    """
+    absolute = 0
+    scaled_absolute = 0
+    for msg in track:
+        absolute += msg.time
+        new_absolute = int(round(absolute * scale))
+        msg.time = max(0, new_absolute - scaled_absolute)
+        scaled_absolute = new_absolute
+
 # --- Chord vocabulary --------------------------------------------------------
 # Chord quality suffixes mapped to semitone offsets from the chord root.
 # The suffixes are listed with a 'C' root in the song tags (e.g. '#chord-C^7#11'
@@ -204,6 +219,9 @@ def generate_vocaloid_midi(
     placeholder: str = "+",
     split_by_syllables: bool = False,
     chord: str = "C",
+    note_length: float = 1.0,
+    gap: float = 0.0,
+    scale: float = 1.0,
 ):
     """
     Converts lyrics into a MIDI file mapped for OpenUtau.
@@ -236,6 +254,17 @@ def generate_vocaloid_midi(
                   chord root so every bar starts in key; all other notes follow
                   the selected mode. Mode 'arp' cycles through the tones of this
                   chord. Unknown or missing chords fall back to 'C'.
+    :param note_length: Division factor for how long each note sounds
+                        (default 1.0). '2' halves every note, '4' quarters it,
+                        while the note keeps its slot in the rhythm, so the
+                        rest of the slot becomes silence.
+    :param gap: Silence inserted after every note, in beats (default 0.0).
+                Rhythm names are also accepted by the tag: '#gap-eighth' is
+                half a beat, '#gap-quarter' one beat. Use a rhythm name rather
+                than a decimal because Obsidian rejects tags containing '.'.
+    :param scale: Division factor for the whole timeline (default 1.0). '2'
+                  makes the entire section fit in half its length, notes, gaps,
+                  rests and bar alignment included.
     """
     
     # Standard MIDI resolution (Ticks Per Quarter Note)
@@ -252,6 +281,14 @@ def generate_vocaloid_midi(
     
     # Default to quarter notes if an invalid rhythm is passed
     ticks = rhythm_map.get(rhythm.lower(), ppq)
+
+    # Timing modifiers: note_length divides how long the note sounds, gap
+    # inserts silence after it (in beats) and scale divides the whole finished
+    # timeline (applied just before saving). Tags use division because Obsidian
+    # does not parse tags containing a decimal point ('#scale-2' == '/ 2').
+    note_length = max(0.001, float(note_length))
+    gap_ticks = max(0, int(round(ppq * float(gap))))
+    scale = max(0.001, float(scale))
 
     # Initialize MIDI file and Track
     mid = mido.MidiFile(ticks_per_beat=ppq)
@@ -414,15 +451,19 @@ def generate_vocaloid_midi(
                 # Map length of the clean word/syllable
                 clean_len = len(clean_word)
                 if clean_len <= 2:
-                    note_duration = rhythm_map["eighth"]
+                    step_duration = rhythm_map["eighth"]
                 elif clean_len <= 4:
-                    note_duration = rhythm_map["quarter"]
+                    step_duration = rhythm_map["quarter"]
                 else:
-                    note_duration = rhythm_map["half"]
+                    step_duration = rhythm_map["half"]
                 
-                # Humanization: add randomization to the note duration (+/- 10 ticks)
+                # Humanization: add randomization to the slot duration (+/- 10 ticks)
                 random_offset = random.randint(-10, 10)
-                note_duration = max(1, note_duration + random_offset)
+                step_duration = max(1, step_duration + random_offset)
+
+                # The note may be shorter than its slot (note_length > 1), which
+                # leaves the remainder of the slot as silence.
+                note_duration = max(1, int(round(step_duration / note_length)))
                 
                 # Write events: Lyric and Note On start at next_note_delay
                 note = _pick_note(word)
@@ -435,20 +476,24 @@ def generate_vocaloid_midi(
                 # Update absolute tick time
                 total_ticks += next_note_delay + note_duration
                 
-                # The next note starts after the rest ticks (if any)
-                next_note_delay = rest_ticks
+                # The next note starts after the rest of the slot, the gap
+                # (if any) and the punctuation rest (if any).
+                next_note_delay = (
+                    max(0, step_duration + gap_ticks - note_duration) + rest_ticks
+                )
             else:
                 # Fixed mode
+                note_duration = max(1, int(round(ticks / note_length)))
                 note = _pick_note(word)
                 track.append(mido.MetaMessage('lyrics', text=word, time=next_note_delay))
                 track.append(mido.Message('note_on', note=note, velocity=100, time=0))
-                track.append(mido.Message('note_off', note=note, velocity=100, time=ticks))
+                track.append(mido.Message('note_off', note=note, velocity=100, time=note_duration))
                 
                 # Update absolute tick time
-                total_ticks += next_note_delay + ticks
+                total_ticks += next_note_delay + note_duration
                 
-                # Reset next_note_delay for subsequent words in fixed mode
-                next_note_delay = 0
+                # Start the next note after the rest of the fixed slot plus the gap.
+                next_note_delay = max(0, ticks + gap_ticks - note_duration)
 
             bar_has_notes = True
 
@@ -459,6 +504,12 @@ def generate_vocaloid_midi(
             padding = next_bar_ticks - bar_end_ticks
             next_note_delay += padding
             total_ticks = next_bar_ticks - next_note_delay
+
+    # --- 3. Compress the finished timeline ---
+    # Applied last so notes, gaps, rests, humanization and bar alignment are
+    # all shortened by the same divisor.
+    if scale != 1.0:
+        _scale_track_times(track, 1.0 / scale)
 
     # Save out the generated sequence
     mid.save(output_file)
@@ -472,12 +523,13 @@ def generate_vocaloid_midi(
 # generate_vocaloid_midi() and are removed from the lyrics. '#chord-X' sets the
 # chord of the section: its root is the one note per bar that always stays in
 # key, and mode 'arp' arpeggiates its tones (default chord when the tag is
-# missing: C). A tag block in the middle of the lyrics starts a
-# new section with the updated settings (earlier settings carry over); all
-# sections are merged into a single .mid file written next to the .md file.
+# missing: C). '#note-length-2' halves every note, '#gap-eighth' inserts an
+# eighth-note of silence after every note and '#scale-2' compresses the whole
+# section (notes, gaps, rests and bars) to half its length. A tag block in the
+# middle of the lyrics starts a new section with the updated settings (earlier
+# settings carry over); all sections are merged into a single .mid file written
+# next to the .md file.
 
-SONG_TAG_RE = re.compile(r'^#([A-Za-z_][A-Za-z0-9_]*)(?:-(.*))?$')
-# A single line may hold several tags, e.g. '#tempo-160 #rythm-natural'.
 SONG_TAG_TOKEN_RE = re.compile(r'#[A-Za-z_][A-Za-z0-9_]*(?:-\S*)?')
 
 SONG_DEFAULT_SETTINGS = {
@@ -492,9 +544,19 @@ SONG_DEFAULT_SETTINGS = {
     "placeholder": "+",
     "split_by_syllables": False,
     "chord": "C",
+    "note_length": 1.0,
+    "gap": 0.0,
+    "scale": 1.0,
 }
 
 _SONG_RHYTHMS = ("whole", "half", "quarter", "eighth", "sixteenth")
+_SONG_RHYTHM_BEATS = {
+    "whole": 4.0,
+    "half": 2.0,
+    "quarter": 1.0,
+    "eighth": 0.5,
+    "sixteenth": 0.25,
+}
 _SONG_RHYTHM_MODES = ("fixed", "natural")
 _SONG_MODES = (
     "single", "similar_words", "seeded_random",
@@ -503,6 +565,37 @@ _SONG_MODES = (
 )
 _SONG_INT_SETTINGS = ("tempo", "seed", "beats_per_bar", "split_length")
 _SONG_BOOL_SETTINGS = ("split_long_words", "split_by_syllables")
+
+# Multi-word settings can be written with underscores or hyphens
+# ('#note-length-2' == '#note_length-2'), and '#rythm-...' is accepted
+# because the rhythm tag is commonly misspelled.
+_SONG_TAG_ALIASES = {"rythm": "rhythm"}
+_SONG_TAG_ALIASES.update(
+    {key.replace("_", "-"): key for key in SONG_DEFAULT_SETTINGS if "_" in key}
+)
+_SONG_TAG_KEYS = sorted(
+    set(SONG_DEFAULT_SETTINGS) | set(_SONG_TAG_ALIASES), key=len, reverse=True
+)
+
+
+def _parse_song_tag(tag: str):
+    """
+    Split a '#tag' or '#tag-value' token into (key, value).
+
+    Keys are matched against the known settings (longest first) so a key that
+    itself contains hyphens, such as 'note-length', is not mistaken for the
+    'key-value' separator. Aliases are resolved to their canonical key.
+    Returns (None, None) when no known key matches.
+    """
+    body = tag.lstrip('#')
+    for key in _SONG_TAG_KEYS:
+        if body == key:
+            return _SONG_TAG_ALIASES.get(key, key), None
+        if body.startswith(key + "-"):
+            return _SONG_TAG_ALIASES.get(key, key), body[len(key) + 1:]
+    # Unknown tag: keep the old first-hyphen split so the error names the tag.
+    key, _, value = body.partition('-')
+    return key, (value or None)
 
 
 def _apply_song_tag(settings: dict, key: str, value: str = None) -> None:
@@ -533,6 +626,37 @@ def _apply_song_tag(settings: dict, key: str, value: str = None) -> None:
             settings[key] = int(value)
         except ValueError:
             print(f"  Tag '#{key}-{value}' is not a number - ignored.")
+        return
+
+    # '#note-length-2' halves every note, '#scale-2' fits the whole section
+    # in half its length.
+    if key in ("note_length", "scale"):
+        try:
+            parsed = float(value)
+        except ValueError:
+            print(f"  Tag '#{key}-{value}' is not a number - ignored.")
+            return
+        if parsed <= 0:
+            print(f"  Tag '#{key}-{value}' must be greater than 0 - ignored.")
+            return
+        settings[key] = parsed
+        return
+
+    # '#gap-eighth' (rhythm name) or '#gap-1' (beats) inserts silence after
+    # every note. Use rhythm names for fractions: Obsidian rejects '.' in tags.
+    if key == "gap":
+        if value in _SONG_RHYTHM_BEATS:
+            settings[key] = _SONG_RHYTHM_BEATS[value]
+            return
+        try:
+            parsed = float(value)
+        except ValueError:
+            print(f"  Unknown gap '#{value}' - ignored.")
+            return
+        if parsed < 0:
+            print(f"  Tag '#gap-{value}' must not be negative - ignored.")
+            return
+        settings[key] = parsed
         return
 
     # '#chord-C', '#chord-Am', '#chord-C^7#11', ... select the chord of the
@@ -596,8 +720,8 @@ def _parse_song_sections(text: str) -> list:
                 sections.append((current_lines, dict(settings)))
                 current_lines = []
             for tag in tags:
-                match = SONG_TAG_RE.match(tag)
-                _apply_song_tag(settings, match.group(1), match.group(2))
+                key, value = _parse_song_tag(tag)
+                _apply_song_tag(settings, key, value)
         else:
             current_lines.append(line)
 
@@ -629,9 +753,13 @@ def _generate_song_midi(sections: list, output_file: Path) -> None:
     for index, (lines, settings) in enumerate(sections):
         # Pad the junction to the next bar boundary of the upcoming section's
         # grid, so its internal bar alignment stays valid in the merged file.
+        # The section's 'scale' divisor shortens that grid too.
         pad = 0
         if index > 0:
-            bar_ticks = ppq * settings["beats_per_bar"]
+            bar_ticks = max(
+                1,
+                int(round(ppq * settings["beats_per_bar"] / settings["scale"])),
+            )
             written = sum(msg.time for msg in merged_track)
             pad = (bar_ticks - (written % bar_ticks)) % bar_ticks
 
