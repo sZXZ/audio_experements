@@ -1152,15 +1152,15 @@ local function sanitize_state(raw)
 end
 
 local function load_saved_state()
---   local project = panel_project()
---   if project == nil then return nil end
---   local ok, raw = pcall(function()
---     return project:getScriptData(SETTINGS_KEY)
---   end)
---   local raw_type = type(raw)
---   if ok and (raw_type == "table" or raw_type == "userdata") then
---     return sanitize_state(raw)
---   end
+  local project = panel_project()
+if project == nil then return nil end
+local ok, raw = pcall(function()
+return project:getScriptData(SETTINGS_KEY)
+end)
+local raw_type = type(raw)
+if ok and (raw_type == "table" or raw_type == "userdata") then
+return sanitize_state(raw)
+end
   return nil
 end
 
@@ -1215,12 +1215,12 @@ local function save_state()
 --   local project = panel_project()
 --   if project == nil then return end
 
---   local ok, err = pcall(function()
---     project:setScriptData(SETTINGS_KEY, collect_state())
---   end)
---   if not ok then
---     log_message("Lyrics to Notes: could not save settings: " .. tostring(err))
---   end
+  local ok, err = pcall(function()
+    project:setScriptData(SETTINGS_KEY, collect_state())
+  end)
+  if not ok then
+    log_message("Lyrics to Notes: could not save settings: " .. tostring(err))
+  end
 end
 
 local function queue_save()
