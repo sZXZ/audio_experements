@@ -26,7 +26,8 @@ standalone, so `require` and multi-file layouts are avoided.
 The generated notes are added as a new note group. Existing notes are never
 modified. Tick **Create a new track** to put the group on a new track instead of
 the current one; the current group's voice is copied to the new track when
-possible.
+possible. There is no completion popup; the summary and any warnings are printed
+to the script console.
 
 ## Lyric input
 

@@ -1154,26 +1154,13 @@ function main()
   target_track:addGroupReference(reference)
 
   local note_word = plural(#generated.events, "note", "notes")
-  local message = string.format("Created %d %s in %d %s and placed it at the playhead.",
-    #generated.events, note_word, generated.sections, section_word)
-  if make_new_track then
-    message = message .. "\nTrack: new track \"Lyrics to Notes\"."
-  else
-    message = message .. "\nTrack: current track."
+  print(string.format("Lyrics to Notes: created %d %s in %d %s on the %s.",
+    #generated.events, note_word, generated.sections, section_word,
+    make_new_track and "new track" or "current track"))
+  for _, warning in ipairs(generated.warnings) do
+    print("Lyrics to Notes: " .. warning)
   end
 
-  if #generated.warnings > 0 then
-    local shown = {}
-    for i = 1, math.min(#generated.warnings, 12) do
-      shown[#shown + 1] = generated.warnings[i]
-    end
-    message = message .. "\n\nWarnings:\n" .. table.concat(shown, "\n")
-    if #generated.warnings > #shown then
-      message = message .. "\n(" .. (#generated.warnings - #shown) .. " more)"
-    end
-  end
-
-  SV:showMessageBox("Lyrics to Notes", message)
   SV:finish()
 end
 
