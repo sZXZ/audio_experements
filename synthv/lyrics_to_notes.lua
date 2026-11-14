@@ -405,6 +405,75 @@ local function parse_chord(symbol)
   return root_class, intervals
 end
 
+-- Synthesizer V 2.2+ stores a musical scale on every note group (Voice panel >
+-- Scale).  The generator only needs a chord, so derive a chord quality from the
+-- scale mode: a major-ish mode becomes a major triad, a minor-ish mode a minor
+-- triad, and so on.  This keeps the first note of each bar in the project's key.
+local SCALE_CHORD_SUFFIX = {
+  major = "",
+  ionian = "",
+  lydian = "",
+  mixolydian = "7",
+  locrian = "o",
+  octatonic = "o",
+  wholetone = "",
+  majorpentatonic = "",
+  majorblues = "7",
+  minor = "m",
+  naturalminor = "m",
+  aeolian = "m",
+  dorian = "m",
+  phrygian = "m",
+  harmonicminor = "m",
+  melodicminor = "m",
+  minorpentatonic = "m",
+  minorblues = "m",
+}
+
+local function normalize_scale_name(value)
+  return tostring(value or ""):lower():gsub("[%s_%-]", "")
+end
+
+local function read_member(object, key)
+  if object == nil then return nil end
+  local ok, value = pcall(function() return object[key] end)
+  if ok then return value end
+  return nil
+end
+
+-- Convert a NoteGroup musical scale such as {type = "NaturalMinor", root = "A"}
+-- into a chord symbol understood by parse_chord().  Returns nil when the host
+-- does not expose a usable scale (older Synthesizer V versions, or no group).
+local function scale_to_chord(scale)
+  if scale == nil then return nil, nil end
+
+  local raw_root = read_member(scale, "root")
+  local raw_type = read_member(scale, "type")
+  if type(raw_root) ~= "string" then return nil, raw_type end
+
+  local root = raw_root:match("^([A-Ga-g][#b]?)")
+  if root == nil then return nil, raw_type end
+  root = root:sub(1, 1):upper() .. root:sub(2)
+
+  local suffix = SCALE_CHORD_SUFFIX[normalize_scale_name(raw_type)] or ""
+  local symbol = root .. suffix
+  if parse_chord(symbol) == nil then symbol = root end
+  if parse_chord(symbol) == nil then return nil, raw_type end
+  return symbol, raw_type
+end
+
+-- Read the musical scale from a NoteGroupReference (the object returned by
+-- Editor:getCurrentGroup()).  Older host versions do not expose getScale(), so
+-- this returns nil and the manual chord remains in use.
+local function group_reference_scale(reference)
+  if reference == nil then return nil end
+  local ok_target, group = pcall(function() return reference:getTarget() end)
+  if not ok_target or group == nil then return nil end
+  local ok_scale, scale = pcall(function() return group:getScale() end)
+  if ok_scale then return scale end
+  return nil
+end
+
 -- --- Tag parsing ------------------------------------------------------------
 
 local TAG_ALIASES = {rythm = "rhythm"}
@@ -990,6 +1059,7 @@ local DEFAULT_UI_STATE = {
   rhythm_mode = "fixed",
   rhythm = "quarter",
   chord = "C",
+  use_project_scale = true,
   beats_per_bar = "4",
   split_by_syllables = false,
   split_long_words = false,
@@ -1082,15 +1152,15 @@ local function sanitize_state(raw)
 end
 
 local function load_saved_state()
-  local project = panel_project()
-  if project == nil then return nil end
-  local ok, raw = pcall(function()
-    return project:getScriptData(SETTINGS_KEY)
-  end)
-  local raw_type = type(raw)
-  if ok and (raw_type == "table" or raw_type == "userdata") then
-    return sanitize_state(raw)
-  end
+--   local project = panel_project()
+--   if project == nil then return nil end
+--   local ok, raw = pcall(function()
+--     return project:getScriptData(SETTINGS_KEY)
+--   end)
+--   local raw_type = type(raw)
+--   if ok and (raw_type == "table" or raw_type == "userdata") then
+--     return sanitize_state(raw)
+--   end
   return nil
 end
 
@@ -1124,6 +1194,7 @@ local function collect_state()
     rhythm_mode = choice_at(RHYTHM_MODE_CHOICES, read_widget(panel_ui.rhythm_mode, 0), "fixed"),
     rhythm = choice_at(RHYTHM_CHOICES, read_widget(panel_ui.rhythm, 2), "quarter"),
     chord = tostring(read_widget(panel_ui.chord, "C")),
+    use_project_scale = as_bool(read_widget(panel_ui.use_project_scale, true)),
     beats_per_bar = tostring(read_widget(panel_ui.beats_per_bar, "4")),
     split_by_syllables = as_bool(read_widget(panel_ui.split_by_syllables, false)),
     split_long_words = as_bool(read_widget(panel_ui.split_long_words, false)),
@@ -1140,16 +1211,16 @@ local function collect_state()
 end
 
 local function save_state()
-  if panel_ui == nil then return end
-  local project = panel_project()
-  if project == nil then return end
+--   if panel_ui == nil then return end
+--   local project = panel_project()
+--   if project == nil then return end
 
-  local ok, err = pcall(function()
-    project:setScriptData(SETTINGS_KEY, collect_state())
-  end)
-  if not ok then
-    log_message("Lyrics to Notes: could not save settings: " .. tostring(err))
-  end
+--   local ok, err = pcall(function()
+--     project:setScriptData(SETTINGS_KEY, collect_state())
+--   end)
+--   if not ok then
+--     log_message("Lyrics to Notes: could not save settings: " .. tostring(err))
+--   end
 end
 
 local function queue_save()
@@ -1175,6 +1246,7 @@ local function apply_panel_state(state)
   panel_ui.rhythm_mode:setValue(choice_index(RHYTHM_MODE_CHOICES, state.rhythm_mode, 0))
   panel_ui.rhythm:setValue(choice_index(RHYTHM_CHOICES, state.rhythm, 2))
   panel_ui.chord:setValue(state.chord)
+  panel_ui.use_project_scale:setValue(state.use_project_scale)
   panel_ui.beats_per_bar:setValue(state.beats_per_bar)
   panel_ui.split_by_syllables:setValue(state.split_by_syllables)
   panel_ui.split_long_words:setValue(state.split_long_words)
@@ -1198,6 +1270,7 @@ local function ensure_panel_ui()
     rhythm_mode = make_widget(0),
     rhythm = make_widget(2),
     chord = make_widget("C"),
+    use_project_scale = make_widget(true),
     beats_per_bar = make_widget("4"),
     split_by_syllables = make_widget(false),
     split_long_words = make_widget(false),
