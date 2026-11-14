@@ -4,30 +4,51 @@ A Lua port of [`lyrics_to_midi.py`](../lyrics_to_midi.py). It turns lyric text
 into a block of notes on a new note group and places that group at the playhead
 on the current track (or on a new track).
 
+The script uses a persistent **side panel UI**. Panel settings are saved inside
+the project file, so they are restored when the project is reopened.
+
 The script is intentionally a single file: Synthesizer V scripts are loaded
 standalone, so `require` and multi-file layouts are avoided.
 
+**Requires Synthesizer V Studio 2.1.2 or newer.**
+
 ## Installation
 
-1. Copy `lyrics_to_notes.lua` into the Synthesizer V Studio user scripts folder:
-   - macOS: `~/Library/Application Support/Dreamtonics/Synthesizer V Studio/scripts/`
-   - Windows: `%APPDATA%\Dreamtonics\Synthesizer V Studio\scripts\`
-2. In Synthesizer V Studio, open the **Scripts** menu (refresh/reload if needed)
-   and run **Lyrics to Notes (Lua)**.
+1. In Synthesizer V Studio, choose **Scripts > Open Scripts Folder**.
+2. Copy `lyrics_to_notes.lua` into that folder.
+3. Choose **Scripts > Rescan**.
+4. Open the **Script Panel** from the sidebar. The **Lyrics to Notes** panel
+   appears there (side panel scripts are not run from the Scripts menu).
+
+The usual user script folder is:
+
+- macOS: `~/Library/Application Support/Dreamtonics/Synthesizer V Studio/scripts/`
+- Windows: `%APPDATA%\Dreamtonics\Synthesizer V Studio\scripts/`
 
 ## Usage
 
 1. Put the playhead where the generated phrase should start.
-2. Run the script. The dialog's lyric box is pre-filled with the clipboard, so
-   copying a song section (for example from Obsidian) before running is the
-   quickest workflow.
-3. Paste lyrics and choose options, then press **OK**.
+2. Open the **Lyrics to Notes** panel in the Script Panel.
+3. Paste or type lyrics, adjust the options, then click **Generate at Playhead**.
 
 The generated notes are added as a new note group. Existing notes are never
 modified. Tick **Create a new track** to put the group on a new track instead of
 the current one; the current group's voice is copied to the new track when
-possible. There is no completion popup; the summary and any warnings are printed
-to the script console.
+possible. There is no completion popup: progress is shown in the panel's
+**Status** field, and warnings are printed to the script console.
+
+The first time the panel opens in a project, the lyric box is pre-filled from
+the clipboard if the clipboard is not empty.
+
+### Saved state
+
+Panel options and lyrics are stored in the project using
+`Project:setScriptData` and are written to the project file when it is saved.
+Reopening the project restores the panel exactly as you left it. The generated
+note group stores its generation settings too, so the settings travel with the
+group when it is copied to another project.
+
+**Reset Options** restores the default settings but keeps the current lyrics.
 
 ## Lyric input
 
@@ -76,7 +97,7 @@ what you want. Prefer **Split words by syllable**.
 | Split long words | off | Emit placeholder notes for long words. |
 | Long-word split length | `4` | Character threshold for long-word splitting. |
 | Note length divisor | `1` | `2` halves every note duration. |
-| Gap after each note | `0` | Beats (number) or a rhythm name such as `eighth`. |
+| Gap after each note | `0` | Beats after each note (slider); tags also accept a rhythm name such as `eighth`. |
 | Timeline divisor | `1` | `2` halves the total timeline (notes and bar grid). |
 | Random seed | `42` | Seed for `seeded_random` and natural humanization. |
 | Split / continuation token | `+` | `+` or `-`. |
@@ -189,13 +210,19 @@ alignment are ported directly. Remaining differences are deliberate:
 - **Rounding:** Python-style half-to-even rounding is implemented for timing
   fidelity.
 - **No file discovery:** unlike the Python script's `process_songs()` batch
-  mode, this script only processes text entered in (or pasted into) the dialog.
+  mode, this script only processes text entered in (or pasted into) the panel.
+- **UI and state:** the Python script is command-line/batch oriented. This port
+  adds a persistent side panel and stores panel settings in the project file.
 
 ## Development notes
 
 - `luajit` is a convenient syntax check: `luajit -bl synthv/lyrics_to_notes.lua /dev/null`.
 - The file exposes a `LyricsToNotes` table (`generate_song`,
   `parse_song_sections`, `parse_chord`, etc.) so the generator can be tested
-  outside Synthesizer V. The host only calls `getClientInfo()` and `main()`.
+  outside Synthesizer V. The host calls `getClientInfo()` and
+  `getSidePanelSectionState()`, then invokes widget callbacks.
+- Panel state is stored under the project script-data key
+  `lyrics_to_notes.settings`. Generated note groups store their settings under
+  the group script-data key `lyrics_to_notes`.
 - The internal grid is 480 ticks per quarter note and is converted to
   Synthesizer V blicks with `SV.QUARTER / 480`.

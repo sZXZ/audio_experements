@@ -863,7 +863,7 @@ local function generate_song(text, base_settings)
   }
 end
 
--- --- Dialog helpers ---------------------------------------------------------
+-- --- Option helpers ---------------------------------------------------------
 
 local function combo_value(answer, choices, default_index)
   local index = nil
@@ -953,8 +953,10 @@ function getClientInfo()
     name = "Lyrics to Notes (Lua)",
     category = "Lyrics",
     author = "audio_checks",
-    versionNumber = 1,
-    minEditorVersion = 65537,
+    versionNumber = 2,
+    -- Side panel sections and ScriptableNestedObject need Synthesizer V 2.1.2.
+    minEditorVersion = 131330,
+    type = "SidePanelSection",
   }
 end
 
@@ -963,134 +965,434 @@ local function plural(count, singular, plural_form)
   return plural_form
 end
 
-function main()
-  local clipboard = SV:getHostClipboard()
-  if type(clipboard) ~= "string" then clipboard = "" end
+-- --- Side panel UI ----------------------------------------------------------
 
-  local form = {
-    title = "Lyrics to Notes",
-    message = "One lyric line per musical bar. Paste Obsidian-style tags to override the defaults: "
-        .. "#mode-arp, #chord-Am, #rhythm-natural, #rhythm-eighth, #beats-per-bar-3, "
-        .. "#split-by-syllables, #split-long-words, #split-length-4, #note-length-2, "
-        .. "#gap-eighth, #scale-2, #seed-7. Tempo tags are ignored; the project tempo is used.",
-    buttons = "OkCancel",
-    widgets = {
-      {
-        name = "lyrics", type = "TextArea",
-        label = "Lyrics (one musical bar per line)",
-        height = 210,
-        default = clipboard,
-      },
-      {
-        name = "mode", type = "ComboBox",
-        label = "Pitch mode",
-        choices = MODE_CHOICES,
-        default = 0,
-      },
-      {
-        name = "rhythm_mode", type = "ComboBox",
-        label = "Rhythm mode",
-        choices = RHYTHM_MODE_CHOICES,
-        default = 0,
-      },
-      {
-        name = "rhythm", type = "ComboBox",
-        label = "Fixed rhythm",
-        choices = RHYTHM_CHOICES,
-        default = 2,
-      },
-      {
-        name = "chord", type = "TextBox",
-        label = "Chord (e.g. C, Am, C^7#11)",
-        default = "C",
-      },
-      {
-        name = "beats_per_bar", type = "TextBox",
-        label = "Beats per bar",
-        default = "4",
-      },
-      {
-        name = "split_by_syllables", type = "CheckBox",
-        text = "Split words by syllable (word first, then '+' per extra syllable)",
-        default = false,
-      },
-      {
-        name = "split_long_words", type = "CheckBox",
-        text = "Split long words into placeholder notes",
-        default = false,
-      },
-      {
-        name = "split_length", type = "TextBox",
-        label = "Long-word split length (characters)",
-        default = "4",
-      },
-      {
-        name = "note_length", type = "TextBox",
-        label = "Note length divisor (2 = half-length notes)",
-        default = "1",
-      },
-      {
-        name = "gap", type = "TextBox",
-        label = "Gap after each note (beats or rhythm name)",
-        default = "0",
-      },
-      {
-        name = "scale", type = "TextBox",
-        label = "Timeline divisor (2 = half total length)",
-        default = "1",
-      },
-      {
-        name = "seed", type = "TextBox",
-        label = "Random seed",
-        default = "42",
-      },
-      {
-        name = "placeholder", type = "ComboBox",
-        label = "Split / continuation token",
-        choices = PLACEHOLDER_CHOICES,
-        default = 0,
-      },
-      {
-        name = "new_track", type = "CheckBox",
-        text = "Create a new track",
-        default = false,
-      },
-    },
-  }
+local SCRIPT_ID = "lyrics_to_notes"
+local SETTINGS_KEY = SCRIPT_ID .. ".settings"
 
-  local result = SV:showCustomDialog(form)
-  local status = result and result.status
-  if not (status == "Ok" or status == true or status == "Yes") then
-    SV:finish()
-    return
+local function log_message(...)
+  if SV ~= nil and type(SV.print) == "function" then
+    SV:print(...)
+  elseif type(print) == "function" then
+    print(...)
   end
+end
 
-  local answers = (result and result.answers) or {}
-  local lyrics = text_answer(answers, "lyrics", "")
-  if trim(lyrics) == "" then
-    SV:showMessageBox("Lyrics to Notes", "No lyrics were provided.")
-    SV:finish()
-    return
+local function panel_project()
+  local ok, project = pcall(function() return SV:getProject() end)
+  if ok then return project end
+  return nil
+end
+
+local DEFAULT_UI_STATE = {
+  lyrics = "",
+  mode = "single",
+  rhythm_mode = "fixed",
+  rhythm = "quarter",
+  chord = "C",
+  beats_per_bar = "4",
+  split_by_syllables = false,
+  split_long_words = false,
+  split_length = 4,
+  note_length = 1.0,
+  gap = 0.0,
+  scale = 1.0,
+  seed = "42",
+  placeholder = "+",
+  new_track = false,
+}
+
+local function as_bool(value)
+  if type(value) == "boolean" then return value end
+  if type(value) == "number" then return value ~= 0 end
+  if type(value) == "string" then
+    local lowered = value:lower()
+    return lowered == "true" or lowered == "yes" or lowered == "1"
   end
+  return false
+end
 
-  local generated = generate_song(lyrics, settings_from_answers(answers))
-  if #generated.events == 0 then
-    local message = "No notes were generated. Check the lyrics and settings."
-    if #generated.warnings > 0 then
-      message = message .. "\n\n" .. table.concat(generated.warnings, "\n")
+local function choice_index(choices, value, default_index)
+  for i, choice in ipairs(choices) do
+    if choice == value then return i - 1 end
+  end
+  return default_index or 0
+end
+
+local function choice_at(choices, value, default)
+  local index = math.floor(tonumber(value) or -1)
+  if index < 0 then index = 0 end
+  if index > #choices - 1 then index = #choices - 1 end
+  return choices[index + 1] or default
+end
+
+local function valid_choice(choices, value, default)
+  for _, choice in ipairs(choices) do
+    if choice == value then return value end
+  end
+  return default
+end
+
+local function clamp_number(value, default, minimum, maximum)
+  local number = tonumber(value)
+  if number == nil then number = default end
+  if number < minimum then number = minimum end
+  if number > maximum then number = maximum end
+  return number
+end
+
+local function sanitize_state(raw)
+  local state = copy_table(DEFAULT_UI_STATE)
+  local raw_type = type(raw)
+  if raw_type == "table" or raw_type == "userdata" then
+    for key, default in pairs(DEFAULT_UI_STATE) do
+      local ok, value = pcall(function() return raw[key] end)
+      if not ok then value = nil end
+      if value ~= nil then
+        if type(default) == "string" then
+          if type(value) == "string" then
+            state[key] = value
+          elseif type(value) == "number" then
+            state[key] = tostring(value)
+          end
+        elseif type(default) == "number" then
+          local number = tonumber(value)
+          if number ~= nil then state[key] = number end
+        elseif type(default) == "boolean" then
+          state[key] = as_bool(value)
+        end
+      end
     end
-    SV:showMessageBox("Lyrics to Notes", message)
-    SV:finish()
+  end
+
+  state.mode = valid_choice(MODE_CHOICES, state.mode, "single")
+  state.rhythm_mode = valid_choice(RHYTHM_MODE_CHOICES, state.rhythm_mode, "fixed")
+  state.rhythm = valid_choice(RHYTHM_CHOICES, state.rhythm, "quarter")
+  state.placeholder = valid_choice(PLACEHOLDER_CHOICES, state.placeholder, "+")
+  state.split_length = math.floor(clamp_number(state.split_length, 4, 1, 16))
+  state.note_length = clamp_number(state.note_length, 1.0, 0.25, 4.0)
+  state.gap = clamp_number(state.gap, 0.0, 0.0, 2.0)
+  state.scale = clamp_number(state.scale, 1.0, 0.25, 4.0)
+  state.beats_per_bar = tostring(math.max(1, parse_int_string(state.beats_per_bar) or 4))
+  state.seed = tostring(parse_int_string(state.seed) or 42)
+  state.chord = tostring(state.chord or "C")
+  if trim(state.chord) == "" then state.chord = "C" end
+  return state
+end
+
+local function load_saved_state()
+  local project = panel_project()
+  if project == nil then return nil end
+  local ok, raw = pcall(function()
+    return project:getScriptData(SETTINGS_KEY)
+  end)
+  local raw_type = type(raw)
+  if ok and (raw_type == "table" or raw_type == "userdata") then
+    return sanitize_state(raw)
+  end
+  return nil
+end
+
+local function initial_panel_state()
+  local saved = load_saved_state()
+  if saved ~= nil then return saved end
+
+  local state = copy_table(DEFAULT_UI_STATE)
+  local ok, clipboard = pcall(function() return SV:getHostClipboard() end)
+  if ok and type(clipboard) == "string" and trim(clipboard) ~= "" then
+    state.lyrics = clipboard
+  end
+  return state
+end
+
+local panel_ui = nil
+local save_pending = false
+local generate_from_panel
+
+local function read_widget(widget, default)
+  if widget == nil then return default end
+  local ok, value = pcall(function() return widget:getValue() end)
+  if ok and value ~= nil then return value end
+  return default
+end
+
+local function collect_state()
+  local state = {
+    lyrics = tostring(read_widget(panel_ui.lyrics, "")),
+    mode = choice_at(MODE_CHOICES, read_widget(panel_ui.mode, 0), "single"),
+    rhythm_mode = choice_at(RHYTHM_MODE_CHOICES, read_widget(panel_ui.rhythm_mode, 0), "fixed"),
+    rhythm = choice_at(RHYTHM_CHOICES, read_widget(panel_ui.rhythm, 2), "quarter"),
+    chord = tostring(read_widget(panel_ui.chord, "C")),
+    beats_per_bar = tostring(read_widget(panel_ui.beats_per_bar, "4")),
+    split_by_syllables = as_bool(read_widget(panel_ui.split_by_syllables, false)),
+    split_long_words = as_bool(read_widget(panel_ui.split_long_words, false)),
+    split_length = clamp_number(read_widget(panel_ui.split_length, 4), 4, 1, 16),
+    note_length = clamp_number(read_widget(panel_ui.note_length, 1.0), 1.0, 0.25, 4.0),
+    gap = clamp_number(read_widget(panel_ui.gap, 0.0), 0.0, 0.0, 2.0),
+    scale = clamp_number(read_widget(panel_ui.scale, 1.0), 1.0, 0.25, 4.0),
+    seed = tostring(read_widget(panel_ui.seed, "42")),
+    placeholder = choice_at(PLACEHOLDER_CHOICES, read_widget(panel_ui.placeholder, 0), "+"),
+    new_track = as_bool(read_widget(panel_ui.new_track, false)),
+  }
+  return sanitize_state(state)
+end
+
+local function save_state()
+  if panel_ui == nil then return end
+  local project = panel_project()
+  if project == nil then return end
+
+  local ok, err = pcall(function()
+    project:setScriptData(SETTINGS_KEY, collect_state())
+  end)
+  if not ok then
+    log_message("Lyrics to Notes: could not save settings: " .. tostring(err))
+  end
+end
+
+local function queue_save()
+  if save_pending then return end
+  save_pending = true
+  local function flush()
+    save_pending = false
+    save_state()
+  end
+  local ok = pcall(function() SV:setTimeout(600, flush) end)
+  if not ok then flush() end
+end
+
+local function make_widget(value)
+  local widget = SV:create("WidgetValue")
+  widget:setValue(value)
+  return widget
+end
+
+local function apply_panel_state(state)
+  panel_ui.lyrics:setValue(state.lyrics)
+  panel_ui.mode:setValue(choice_index(MODE_CHOICES, state.mode, 0))
+  panel_ui.rhythm_mode:setValue(choice_index(RHYTHM_MODE_CHOICES, state.rhythm_mode, 0))
+  panel_ui.rhythm:setValue(choice_index(RHYTHM_CHOICES, state.rhythm, 2))
+  panel_ui.chord:setValue(state.chord)
+  panel_ui.beats_per_bar:setValue(state.beats_per_bar)
+  panel_ui.split_by_syllables:setValue(state.split_by_syllables)
+  panel_ui.split_long_words:setValue(state.split_long_words)
+  panel_ui.split_length:setValue(state.split_length)
+  panel_ui.note_length:setValue(state.note_length)
+  panel_ui.gap:setValue(state.gap)
+  panel_ui.scale:setValue(state.scale)
+  panel_ui.seed:setValue(state.seed)
+  panel_ui.placeholder:setValue(choice_index(PLACEHOLDER_CHOICES, state.placeholder, 0))
+  panel_ui.new_track:setValue(state.new_track)
+end
+
+local function ensure_panel_ui()
+  if panel_ui ~= nil then return panel_ui end
+
+  local state = initial_panel_state()
+  panel_ui = {
+    lyrics = make_widget(""),
+    mode = make_widget(0),
+    rhythm_mode = make_widget(0),
+    rhythm = make_widget(2),
+    chord = make_widget("C"),
+    beats_per_bar = make_widget("4"),
+    split_by_syllables = make_widget(false),
+    split_long_words = make_widget(false),
+    split_length = make_widget(4),
+    note_length = make_widget(1.0),
+    gap = make_widget(0.0),
+    scale = make_widget(1.0),
+    seed = make_widget("42"),
+    placeholder = make_widget(0),
+    new_track = make_widget(false),
+    status = make_widget("Ready."),
+    generate = make_widget(1),
+    reset = make_widget(1),
+  }
+  panel_ui.status:setEnabled(false)
+  apply_panel_state(state)
+
+  local saved_widgets = {
+    panel_ui.lyrics, panel_ui.mode, panel_ui.rhythm_mode, panel_ui.rhythm,
+    panel_ui.chord, panel_ui.beats_per_bar, panel_ui.split_by_syllables,
+    panel_ui.split_long_words, panel_ui.split_length, panel_ui.note_length,
+    panel_ui.gap, panel_ui.scale, panel_ui.seed, panel_ui.placeholder,
+    panel_ui.new_track,
+  }
+  for _, widget in ipairs(saved_widgets) do
+    widget:setValueChangeCallback(function() queue_save() end)
+  end
+
+  panel_ui.generate:setValueChangeCallback(function()
+    local ok, err = pcall(generate_from_panel)
+    if not ok then
+      panel_ui.status:setValue("Error: " .. tostring(err))
+      log_message("Lyrics to Notes: " .. tostring(err))
+    end
+  end)
+
+  panel_ui.reset:setValueChangeCallback(function()
+    local lyrics = tostring(read_widget(panel_ui.lyrics, ""))
+    local defaults = copy_table(DEFAULT_UI_STATE)
+    defaults.lyrics = lyrics
+    apply_panel_state(defaults)
+    save_state()
+    panel_ui.status:setValue("Options reset to defaults.")
+  end)
+
+  return panel_ui
+end
+
+local function state_to_answers(state)
+  return {
+    lyrics = state.lyrics,
+    mode = choice_index(MODE_CHOICES, state.mode, 0),
+    rhythm_mode = choice_index(RHYTHM_MODE_CHOICES, state.rhythm_mode, 0),
+    rhythm = choice_index(RHYTHM_CHOICES, state.rhythm, 2),
+    chord = state.chord,
+    beats_per_bar = state.beats_per_bar,
+    split_by_syllables = state.split_by_syllables,
+    split_long_words = state.split_long_words,
+    split_length = tostring(state.split_length),
+    note_length = tostring(state.note_length),
+    gap = tostring(state.gap),
+    scale = tostring(state.scale),
+    seed = state.seed,
+    placeholder = choice_index(PLACEHOLDER_CHOICES, state.placeholder, 0),
+    new_track = state.new_track,
+  }
+end
+
+local function build_panel_rows(ui)
+  return {
+    {type = "Label", text = "Lyrics (one line per bar)"},
+    {type = "Container", columns = {
+      {type = "TextArea", value = ui.lyrics, width = 1.0, height = 160},
+    }},
+    {type = "Label", text = "Tags: #mode-arp  #chord-Am  #rhythm-natural  #split-by-syllables"},
+    {type = "Label", text = "Pitch mode"},
+    {type = "Container", columns = {
+      {type = "ComboBox", choices = MODE_CHOICES, value = ui.mode, width = 1.0},
+    }},
+    {type = "Label", text = "Rhythm mode / fixed value"},
+    {type = "Container", columns = {
+      {type = "ComboBox", choices = RHYTHM_MODE_CHOICES, value = ui.rhythm_mode, width = 0.5},
+      {type = "ComboBox", choices = RHYTHM_CHOICES, value = ui.rhythm, width = 0.5},
+    }},
+    {type = "Label", text = "Chord / beats per bar"},
+    {type = "Container", columns = {
+      {type = "TextBox", value = ui.chord, width = 0.6},
+      {type = "TextBox", value = ui.beats_per_bar, width = 0.4},
+    }},
+    {type = "Label", text = "Splitting"},
+    {type = "Container", columns = {
+      {type = "CheckBox", text = "Split words by syllable", value = ui.split_by_syllables, width = 1.0},
+    }},
+    {type = "Container", columns = {
+      {type = "CheckBox", text = "Split long words into placeholders", value = ui.split_long_words, width = 1.0},
+    }},
+    {type = "Container", columns = {
+      {type = "Slider", text = "Long-word length", format = "%2.0f chars",
+       minValue = 1, maxValue = 16, interval = 1, value = ui.split_length, width = 1.0},
+    }},
+    {type = "Label", text = "Timing"},
+    {type = "Container", columns = {
+      {type = "Slider", text = "Note length", format = "%2.2fx",
+       minValue = 0.25, maxValue = 4, interval = 0.25, value = ui.note_length, width = 0.5},
+      {type = "Slider", text = "Timeline", format = "%2.2fx",
+       minValue = 0.25, maxValue = 4, interval = 0.25, value = ui.scale, width = 0.5},
+    }},
+    {type = "Container", columns = {
+      {type = "Slider", text = "Gap after note", format = "%2.2f beats",
+       minValue = 0, maxValue = 2, interval = 0.25, value = ui.gap, width = 1.0},
+    }},
+    {type = "Label", text = "Split token / random seed"},
+    {type = "Container", columns = {
+      {type = "ComboBox", choices = PLACEHOLDER_CHOICES, value = ui.placeholder, width = 0.5},
+      {type = "TextBox", value = ui.seed, width = 0.5},
+    }},
+    {type = "Container", columns = {
+      {type = "CheckBox", text = "Create a new track", value = ui.new_track, width = 1.0},
+    }},
+    {type = "Container", columns = {
+      {type = "Button", text = "Generate at Playhead", value = ui.generate, width = 0.7},
+      {type = "Button", text = "Reset Options", value = ui.reset, width = 0.3},
+    }},
+    {type = "Label", text = "Status"},
+    {type = "Container", columns = {
+      {type = "TextBox", value = ui.status, width = 1.0},
+    }},
+  }
+end
+
+function getSidePanelSectionState()
+  local ui = ensure_panel_ui()
+  return {
+    title = "Lyrics to Notes",
+    rows = build_panel_rows(ui),
+  }
+end
+
+generate_from_panel = function()
+  local state = collect_state()
+  save_state()
+
+  if trim(state.lyrics) == "" then
+    panel_ui.status:setValue("No lyrics provided.")
+    return
+  end
+
+  local answers = state_to_answers(state)
+  local settings = settings_from_answers(answers)
+  local ok, generated = pcall(generate_song, state.lyrics, settings)
+  if not ok then
+    panel_ui.status:setValue("Error: " .. tostring(generated))
+    log_message("Lyrics to Notes: " .. tostring(generated))
+    return
+  end
+
+  if #generated.events == 0 then
+    panel_ui.status:setValue("No notes generated.")
+    for _, warning in ipairs(generated.warnings) do
+      log_message("Lyrics to Notes: " .. warning)
+    end
     return
   end
 
   local project = SV:getProject()
   local editor = SV:getMainEditor()
+  pcall(function() project:newUndoRecord() end)
 
   local group = SV:create("NoteGroup")
   local section_word = plural(generated.sections, "section", "sections")
   group:setName(string.format("Lyrics to Notes (%d %s)",
     generated.sections, section_word))
+
+  -- Keep the generation settings with the group. Script data is persisted in
+  -- the project file and travels with the group when it is copied.
+  local group_settings = settings_from_answers(answers)
+  pcall(function()
+    group:setScriptData(SCRIPT_ID, {
+      version = 1,
+      sections = generated.sections,
+      notes = #generated.events,
+      settings = {
+        mode = group_settings.mode,
+        rhythm = group_settings.rhythm,
+        rhythm_mode = group_settings.rhythm_mode,
+        chord = group_settings.chord,
+        beats_per_bar = group_settings.beats_per_bar,
+        split_by_syllables = group_settings.split_by_syllables,
+        split_long_words = group_settings.split_long_words,
+        split_length = group_settings.split_length,
+        placeholder = group_settings.placeholder,
+        note_length = group_settings.note_length,
+        gap = group_settings.gap,
+        scale = group_settings.scale,
+        seed = group_settings.seed,
+      },
+    })
+  end)
 
   local tick_to_blick = SV.QUARTER / PPQ
   local function to_blick(ticks)
@@ -1112,7 +1414,7 @@ function main()
 
   project:addNoteGroup(group)
 
-  local make_new_track = bool_answer(answers, "new_track", false)
+  local make_new_track = as_bool(answers.new_track)
   local source_group = editor:getCurrentGroup()
   local target_track
 
@@ -1131,8 +1433,8 @@ function main()
   -- A new track starts with the default voice; copy the current group's voice
   -- so the generated notes keep the sound the user is already working with.
   if make_new_track and source_group ~= nil then
-    local ok, voice = pcall(function() return source_group:getVoice() end)
-    if ok and voice ~= nil then
+    local ok_voice, voice = pcall(function() return source_group:getVoice() end)
+    if ok_voice and voice ~= nil then
       pcall(function() reference:setVoice(voice) end)
     end
   end
@@ -1154,17 +1456,18 @@ function main()
   target_track:addGroupReference(reference)
 
   local note_word = plural(#generated.events, "note", "notes")
-  print(string.format("Lyrics to Notes: created %d %s in %d %s on the %s.",
+  local summary = string.format("Created %d %s in %d %s on the %s.",
     #generated.events, note_word, generated.sections, section_word,
-    make_new_track and "new track" or "current track"))
+    make_new_track and "new track" or "current track")
+  panel_ui.status:setValue(summary)
+  log_message("Lyrics to Notes: " .. summary)
   for _, warning in ipairs(generated.warnings) do
-    print("Lyrics to Notes: " .. warning)
+    log_message("Lyrics to Notes: " .. warning)
   end
-
-  SV:finish()
 end
 
--- Exposed for testing; Synthesizer V only calls getClientInfo() and main().
+-- Exposed for testing; Synthesizer V calls getClientInfo(),
+-- getSidePanelSectionState(), and the panel's widget callbacks.
 LyricsToNotes = {
   generate_song = generate_song,
   parse_song_sections = parse_song_sections,
