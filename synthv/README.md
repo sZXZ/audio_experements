@@ -31,11 +31,23 @@ The usual user script folder is:
 2. Open the **Lyrics to Notes** panel in the Script Panel.
 3. Paste or type lyrics, adjust the options, then click **Generate at Playhead**.
 
-The generated notes are added as a new note group. Existing notes are never
-modified. Tick **Create a new track** to put the group on a new track instead of
-the current one; the current group's voice is copied to the new track when
-possible. There is no completion popup: progress is shown in the panel's
-**Status** field, and warnings are printed to the script console.
+By default **Add to existing section at playhead** is checked. If a section on
+the current track spans the playhead, the generated notes are inserted into that
+section's NoteGroup at the playhead instead of creating a new section. Uncheck
+it to always create a new section. Merging is skipped when **Create a new
+track** is checked.
+
+When a new section is created, its note group reference copies the current group
+reference's voice properties and pitch offset, so the new section keeps the
+voice settings of the section you are working in. Merging uses the existing
+section's voice settings.
+
+Existing notes are never deleted. Merging adds notes to the existing group, so
+overlapping notes are possible. If the target NoteGroup is shared by multiple
+references, the added notes appear in every reference to that group.
+
+There is no completion popup: progress is shown in the panel's **Status** field,
+and warnings are printed to the script console.
 
 The first time the panel opens in a project, the lyric box is pre-filled from
 the clipboard if the clipboard is not empty.

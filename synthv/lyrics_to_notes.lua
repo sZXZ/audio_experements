@@ -999,6 +999,7 @@ local DEFAULT_UI_STATE = {
   scale = 1.0,
   seed = "42",
   placeholder = "+",
+  merge_existing = true,
   new_track = false,
 }
 
@@ -1132,6 +1133,7 @@ local function collect_state()
     scale = clamp_number(read_widget(panel_ui.scale, 1.0), 1.0, 0.25, 4.0),
     seed = tostring(read_widget(panel_ui.seed, "42")),
     placeholder = choice_at(PLACEHOLDER_CHOICES, read_widget(panel_ui.placeholder, 0), "+"),
+    merge_existing = as_bool(read_widget(panel_ui.merge_existing, true)),
     new_track = as_bool(read_widget(panel_ui.new_track, false)),
   }
   return sanitize_state(state)
@@ -1182,6 +1184,7 @@ local function apply_panel_state(state)
   panel_ui.scale:setValue(state.scale)
   panel_ui.seed:setValue(state.seed)
   panel_ui.placeholder:setValue(choice_index(PLACEHOLDER_CHOICES, state.placeholder, 0))
+  panel_ui.merge_existing:setValue(state.merge_existing)
   panel_ui.new_track:setValue(state.new_track)
 end
 
@@ -1204,6 +1207,7 @@ local function ensure_panel_ui()
     scale = make_widget(1.0),
     seed = make_widget("42"),
     placeholder = make_widget(0),
+    merge_existing = make_widget(true),
     new_track = make_widget(false),
     status = make_widget("Ready."),
     generate = make_widget(1),
@@ -1217,7 +1221,7 @@ local function ensure_panel_ui()
     panel_ui.chord, panel_ui.beats_per_bar, panel_ui.split_by_syllables,
     panel_ui.split_long_words, panel_ui.split_length, panel_ui.note_length,
     panel_ui.gap, panel_ui.scale, panel_ui.seed, panel_ui.placeholder,
-    panel_ui.new_track,
+    panel_ui.merge_existing, panel_ui.new_track,
   }
   for _, widget in ipairs(saved_widgets) do
     widget:setValueChangeCallback(function() queue_save() end)
@@ -1259,6 +1263,7 @@ local function state_to_answers(state)
     scale = tostring(state.scale),
     seed = state.seed,
     placeholder = choice_index(PLACEHOLDER_CHOICES, state.placeholder, 0),
+    merge_existing = state.merge_existing,
     new_track = state.new_track,
   }
 end
@@ -1311,6 +1316,10 @@ local function build_panel_rows(ui)
       {type = "ComboBox", choices = PLACEHOLDER_CHOICES, value = ui.placeholder, width = 0.5},
       {type = "TextBox", value = ui.seed, width = 0.5},
     }},
+    {type = "Label", text = "Placement"},
+    {type = "Container", columns = {
+      {type = "CheckBox", text = "Add to existing section at playhead", value = ui.merge_existing, width = 1.0},
+    }},
     {type = "Container", columns = {
       {type = "CheckBox", text = "Create a new track", value = ui.new_track, width = 1.0},
     }},
@@ -1331,6 +1340,58 @@ function getSidePanelSectionState()
     title = "Lyrics to Notes",
     rows = build_panel_rows(ui),
   }
+end
+
+local function reference_contains_blick(reference, blick)
+  local ok_onset, onset = pcall(function() return reference:getOnset() end)
+  local ok_end, ending = pcall(function() return reference:getEnd() end)
+  if not ok_onset or not ok_end or onset == nil or ending == nil then
+    return false
+  end
+  if blick < onset then return false end
+  -- An empty section has onset == end; treat it as present at that position.
+  if ending <= onset then return blick == onset end
+  return blick < ending
+end
+
+local function find_reference_at_playhead(track, blick, preferred)
+  if track == nil then return nil end
+
+  local ok_count, count = pcall(function() return track:getNumGroups() end)
+  if not ok_count or count == nil or count < 1 then return nil end
+
+  local preferred_index = nil
+  if preferred ~= nil then
+    local ok_index, index = pcall(function()
+      return preferred:getIndexInParent()
+    end)
+    if ok_index and index ~= nil then preferred_index = index end
+  end
+
+  if preferred_index ~= nil
+      and preferred_index >= 1 and preferred_index <= count then
+    local ok_ref, reference = pcall(function()
+      return track:getGroupReference(preferred_index)
+    end)
+    if ok_ref and reference ~= nil
+        and reference_contains_blick(reference, blick) then
+      return reference
+    end
+  end
+
+  for index = 1, count do
+    if index ~= preferred_index then
+      local ok_ref, reference = pcall(function()
+        return track:getGroupReference(index)
+      end)
+      if ok_ref and reference ~= nil
+          and reference_contains_blick(reference, blick) then
+        return reference
+      end
+    end
+  end
+
+  return nil
 end
 
 generate_from_panel = function()
@@ -1363,57 +1424,6 @@ generate_from_panel = function()
   local editor = SV:getMainEditor()
   pcall(function() project:newUndoRecord() end)
 
-  local group = SV:create("NoteGroup")
-  local section_word = plural(generated.sections, "section", "sections")
-  group:setName(string.format("Lyrics to Notes (%d %s)",
-    generated.sections, section_word))
-
-  -- Keep the generation settings with the group. Script data is persisted in
-  -- the project file and travels with the group when it is copied.
-  local group_settings = settings_from_answers(answers)
-  pcall(function()
-    group:setScriptData(SCRIPT_ID, {
-      version = 1,
-      sections = generated.sections,
-      notes = #generated.events,
-      settings = {
-        mode = group_settings.mode,
-        rhythm = group_settings.rhythm,
-        rhythm_mode = group_settings.rhythm_mode,
-        chord = group_settings.chord,
-        beats_per_bar = group_settings.beats_per_bar,
-        split_by_syllables = group_settings.split_by_syllables,
-        split_long_words = group_settings.split_long_words,
-        split_length = group_settings.split_length,
-        placeholder = group_settings.placeholder,
-        note_length = group_settings.note_length,
-        gap = group_settings.gap,
-        scale = group_settings.scale,
-        seed = group_settings.seed,
-      },
-    })
-  end)
-
-  local tick_to_blick = SV.QUARTER / PPQ
-  local function to_blick(ticks)
-    return math.floor(ticks * tick_to_blick + 0.5)
-  end
-
-  for _, event in ipairs(generated.events) do
-    local onset = to_blick(event.onset)
-    local ending = to_blick(event.onset + event.duration)
-    local duration = ending - onset
-    if duration < 1 then duration = 1 end
-
-    local note = SV:create("Note")
-    note:setTimeRange(onset, duration)
-    note:setPitch(event.pitch)
-    note:setLyrics(event.lyric)
-    group:addNote(note)
-  end
-
-  project:addNoteGroup(group)
-
   local make_new_track = as_bool(answers.new_track)
   local source_group = editor:getCurrentGroup()
   local target_track
@@ -1425,18 +1435,6 @@ generate_from_panel = function()
   else
     target_track = editor:getCurrentTrack()
     if target_track == nil then target_track = project:getTrack(1) end
-  end
-
-  local reference = SV:create("NoteGroupReference")
-  reference:setTarget(group)
-
-  -- A new track starts with the default voice; copy the current group's voice
-  -- so the generated notes keep the sound the user is already working with.
-  if make_new_track and source_group ~= nil then
-    local ok_voice, voice = pcall(function() return source_group:getVoice() end)
-    if ok_voice and voice ~= nil then
-      pcall(function() reference:setVoice(voice) end)
-    end
   end
 
   local start_blick = 0
@@ -1451,14 +1449,124 @@ generate_from_panel = function()
     end
   end
   if start_blick < 0 then start_blick = 0 end
-  reference:setTimeOffset(math.floor(start_blick + 0.5))
+  start_blick = math.floor(start_blick + 0.5)
 
-  target_track:addGroupReference(reference)
+  local merge_existing = as_bool(answers.merge_existing)
+  local existing_reference = nil
+  if merge_existing and not make_new_track then
+    existing_reference = find_reference_at_playhead(
+      target_track, start_blick, source_group)
+  end
+
+  local tick_to_blick = SV.QUARTER / PPQ
+  local function to_blick(ticks)
+    return math.floor(ticks * tick_to_blick + 0.5)
+  end
 
   local note_word = plural(#generated.events, "note", "notes")
-  local summary = string.format("Created %d %s in %d %s on the %s.",
-    #generated.events, note_word, generated.sections, section_word,
-    make_new_track and "new track" or "current track")
+  local summary
+
+  if existing_reference ~= nil then
+    local target_group = existing_reference:getTarget()
+    local group_offset = existing_reference:getTimeOffset()
+    local base_onset = start_blick - group_offset
+    if base_onset < 0 then base_onset = 0 end
+
+    for _, event in ipairs(generated.events) do
+      local event_onset = to_blick(event.onset)
+      local event_end = to_blick(event.onset + event.duration)
+      local duration = event_end - event_onset
+      if duration < 1 then duration = 1 end
+
+      local note = SV:create("Note")
+      note:setTimeRange(base_onset + event_onset, duration)
+      note:setPitch(event.pitch)
+      note:setLyrics(event.lyric)
+      target_group:addNote(note)
+    end
+
+    summary = string.format(
+      "Added %d %s to the existing section at the playhead.",
+      #generated.events, note_word)
+  else
+    local group = SV:create("NoteGroup")
+    local section_word = plural(generated.sections, "section", "sections")
+    group:setName(string.format("Lyrics to Notes (%d %s)",
+      generated.sections, section_word))
+
+    -- Keep the generation settings with the group. Script data is persisted in
+    -- the project file and travels with the group when it is copied.
+    local group_settings = settings_from_answers(answers)
+    pcall(function()
+      group:setScriptData(SCRIPT_ID, {
+        version = 1,
+        sections = generated.sections,
+        notes = #generated.events,
+        settings = {
+          mode = group_settings.mode,
+          rhythm = group_settings.rhythm,
+          rhythm_mode = group_settings.rhythm_mode,
+          chord = group_settings.chord,
+          beats_per_bar = group_settings.beats_per_bar,
+          split_by_syllables = group_settings.split_by_syllables,
+          split_long_words = group_settings.split_long_words,
+          split_length = group_settings.split_length,
+          placeholder = group_settings.placeholder,
+          note_length = group_settings.note_length,
+          gap = group_settings.gap,
+          scale = group_settings.scale,
+          seed = group_settings.seed,
+        },
+      })
+    end)
+
+    for _, event in ipairs(generated.events) do
+      local onset = to_blick(event.onset)
+      local ending = to_blick(event.onset + event.duration)
+      local duration = ending - onset
+      if duration < 1 then duration = 1 end
+
+      local note = SV:create("Note")
+      note:setTimeRange(onset, duration)
+      note:setPitch(event.pitch)
+      note:setLyrics(event.lyric)
+      group:addNote(note)
+    end
+
+    project:addNoteGroup(group)
+
+    local reference = SV:create("NoteGroupReference")
+    reference:setTarget(group)
+
+    -- A new reference starts with default voice settings. Copy the current
+    -- group reference's voice properties and pitch offset so the new section
+    -- sounds like the section the user is working in. (SplitSelectedGroups.lua
+    -- uses the same approach when splitting a group.)
+    if source_group ~= nil then
+      local ok_voice, voice = pcall(function() return source_group:getVoice() end)
+      if ok_voice and voice ~= nil then
+        -- Ensure an empty attributes table is serialized as an object rather
+        -- than an array (same workaround as the bundled SplitSelectedGroups).
+        if type(voice) == "table" then voice._ = "" end
+        pcall(function() reference:setVoice(voice) end)
+      end
+
+      local ok_pitch, pitch_offset = pcall(function()
+        return source_group:getPitchOffset()
+      end)
+      if ok_pitch and pitch_offset ~= nil and pitch_offset ~= 0 then
+        pcall(function() reference:setPitchOffset(pitch_offset) end)
+      end
+    end
+
+    reference:setTimeOffset(start_blick)
+    target_track:addGroupReference(reference)
+
+    summary = string.format("Created %d %s in %d %s on the %s.",
+      #generated.events, note_word, generated.sections, section_word,
+      make_new_track and "new track" or "current track")
+  end
+
   panel_ui.status:setValue(summary)
   log_message("Lyrics to Notes: " .. summary)
   for _, warning in ipairs(generated.warnings) do
